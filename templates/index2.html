@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LIVE Trading Dashboard - Real-time</title>
+    <link rel="icon" type="image/x-icon" href="https://icons8.com/icon/RxpP4tTaUhYX/heavy-dollar-sign">
+    <title>BNK Trading ICT</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
@@ -160,6 +161,7 @@
             color: #4cc9f0;
             border-bottom: 1px solid var(--border-color);
             padding-bottom: 8px;
+            text-align: center;
         }
         
         .top-row {
@@ -178,6 +180,7 @@
         .summary-item {
             display: flex;
             flex-direction: column;
+            text-align: center;
         }
         
         .summary-label {
@@ -235,7 +238,7 @@
         }
         
         .positions-table th {
-            text-align: left;
+            text-align: center;
             padding: 12px;
             border-bottom: 1px solid var(--border-color);
             color: #a0a0a0;
@@ -246,6 +249,7 @@
         .positions-table td {
             padding: 12px;
             border-bottom: 1px solid var(--border-color);
+            text-align: center;
         }
         
         .positions-table tr:hover {
@@ -280,7 +284,7 @@
         
         .trades-table th, .trades-table td {
             padding: 12px;
-            text-align: left;
+            text-align: center;
             border-bottom: 1px solid var(--border-color);
         }
         
@@ -307,7 +311,7 @@
         .last-update {
             font-size: 12px;
             color: #a0a0a0;
-            text-align: right;
+            text-align: center;
             margin-top: 10px;
         }
         
@@ -320,7 +324,7 @@
         
         .bottom-row {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: 1fr;
             gap: 20px;
         }
         
@@ -438,7 +442,7 @@
             transition: all 0.3s ease;
             border: 1px solid transparent;
             min-height: 70px;
-            position: relative; /* Dodane dla pozycjonowania procentów */
+            position: relative;
         }
         
         .crypto-item:hover {
@@ -514,7 +518,6 @@
             border: 1px solid rgba(160, 160, 160, 0.3);
         }
         
-        /* Animacja świecenia dla aktywnych zmian cen */
         @keyframes priceUpdate {
             0% { 
                 background-color: transparent;
@@ -534,7 +537,6 @@
             animation: priceUpdate 1s ease-in-out;
         }
         
-        /* Responsywność */
         @media (max-width: 1200px) {
             .crypto-prices-container {
                 grid-template-columns: repeat(3, 1fr);
@@ -744,7 +746,7 @@
                         </tr>
                     </tbody>
                 </table>
-                <div style="margin-top: 15px; font-weight: bold;">
+                <div style="margin-top: 15px; font-weight: bold; text-align: center;">
                     Total Unrealized P&L: <span class="profit" id="total-unrealized">$0.00</span>
                 </div>
                 <div class="last-update" id="positions-update">Last update: --</div>
@@ -782,39 +784,38 @@
                 <div class="last-update" id="confidence-update">Last update: --</div>
             </div>
             
-            <!-- BOTTOM ROW: Account Value Chart + Recent Trades - SAME WIDTH AS ACTIVE POSITIONS -->
-            <div class="bottom-row">
-                <div class="card full-width">
-                    <h2 class="card-title">Account Value</h2>
-                    <div class="chart-container">
-                        <canvas id="accountValueChart"></canvas>
-                    </div>
-                    <div class="last-update" id="chart-update">Chart updates after trades</div>
+            <!-- ACCOUNT VALUE CHART - FULL WIDTH -->
+            <div class="card full-width">
+                <h2 class="card-title">Account Value</h2>
+                <div class="chart-container">
+                    <canvas id="accountValueChart"></canvas>
                 </div>
-                
-                <div class="card full-width">
-                    <h2 class="card-title">Recent Trades</h2>
-                    <table class="trades-table" id="trades-table">
-                        <thead>
-                            <tr>
-                                <th>Time</th>
-                                <th>Symbol</th>
-                                <th>Side</th>
-                                <th>Entry Price</th>
-                                <th>Exit Price</th>
-                                <th>Quantity</th>
-                                <th>P&L</th>
-                                <th>Reason</th>
-                            </tr>
-                        </thead>
-                        <tbody id="trades-body">
-                            <tr>
-                                <td colspan="8" class="no-trades">No recent trades</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                    <div class="last-update" id="trades-update">Last update: --</div>
-                </div>
+                <div class="last-update" id="chart-update">Chart updates every 3 seconds</div>
+            </div>
+            
+            <!-- RECENT TRADES - FULL WIDTH -->
+            <div class="card full-width">
+                <h2 class="card-title">Recent Trades</h2>
+                <table class="trades-table" id="trades-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Symbol</th>
+                            <th>Side</th>
+                            <th>Entry Price</th>
+                            <th>Exit Price</th>
+                            <th>Quantity</th>
+                            <th>P&L</th>
+                            <th>Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody id="trades-body">
+                        <tr>
+                            <td colspan="8" class="no-trades">No recent trades</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div class="last-update" id="trades-update">Last update: --</div>
             </div>
         </div>
     </div>
@@ -822,7 +823,7 @@
     <script>
         let accountChart;
         let updateInterval;
-        let lastTradeCount = 0;
+        let lastTotalValue = 0;
         let chartData = {
             labels: [],
             values: []
@@ -1065,34 +1066,52 @@
                 type: 'line',
                 data: {
                     labels: chartData.labels,
-                    datasets: [{
-                        label: 'Account Value',
-                        data: chartData.values,
-                        borderColor: '#4cc9f0',
-                        backgroundColor: 'rgba(76, 201, 240, 0.1)',
-                        borderWidth: 2,
-                        fill: true,
-                        tension: 0.4,
-                        pointBackgroundColor: '#4cc9f0',
-                        pointBorderColor: '#ffffff',
-                        pointBorderWidth: 2,
-                        pointRadius: 4,
-                        pointHoverRadius: 6
-                    }]
+                    datasets: [
+                        {
+                            label: 'Account Value',
+                            data: chartData.values,
+                            borderColor: '#4cc9f0',
+                            backgroundColor: 'rgba(76, 201, 240, 0.1)',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.4,
+                            pointBackgroundColor: '#4cc9f0',
+                            pointBorderColor: '#ffffff',
+                            pointBorderWidth: 2,
+                            pointRadius: 4,
+                            pointHoverRadius: 6
+                        },
+                        {
+                            label: 'Initial Capital',
+                            data: chartData.labels.map(() => initialCapital),
+                            borderColor: '#a0a0a0',
+                            backgroundColor: 'transparent',
+                            borderWidth: 1,
+                            borderDash: [5, 5],
+                            fill: false,
+                            pointRadius: 0,
+                            tension: 0
+                        }
+                    ]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
                     plugins: {
                         legend: { 
-                            display: false 
+                            display: true,
+                            position: 'top',
+                            labels: {
+                                color: '#a0a0a0',
+                                usePointStyle: true
+                            }
                         },
                         tooltip: {
                             mode: 'index',
                             intersect: false,
                             callbacks: {
                                 label: function(context) {
-                                    return `$${context.parsed.y.toLocaleString()}`;
+                                    return `${context.dataset.label}: $${context.parsed.y.toLocaleString()}`;
                                 }
                             }
                         }
@@ -1174,18 +1193,17 @@
             }
         }
 
-        // Aktualizuj wykres TYLKO po transakcjach
+        // Aktualizuj wykres przy KAŻDEJ aktualizacji danych
         function updateChart(data) {
-            const currentTradeCount = data.recent_trades.length;
+            const currentTotalValue = data.account_summary?.total_value || initialCapital;
             
-            // Sprawdź czy była nowa transakcja
-            if (currentTradeCount > lastTradeCount) {
+            // Sprawdź czy wartość się zmieniła
+            if (currentTotalValue !== lastTotalValue) {
                 // Dodaj nowy punkt do wykresu
-                const newLabel = `Trade ${chartData.labels.length + 1}`;
-                const newValue = data.account_summary.total_value;
+                const newLabel = new Date().toLocaleTimeString();
                 
                 chartData.labels.push(newLabel);
-                chartData.values.push(newValue);
+                chartData.values.push(currentTotalValue);
                 
                 // Ogranicz do ostatnich 20 punktów
                 if (chartData.labels.length > 20) {
@@ -1196,13 +1214,14 @@
                 // Zaktualizuj wykres
                 accountChart.data.labels = chartData.labels;
                 accountChart.data.datasets[0].data = chartData.values;
+                accountChart.data.datasets[1].data = chartData.labels.map(() => initialCapital);
                 accountChart.update('active');
                 
                 // Zaktualizuj informację
                 document.getElementById('chart-update').textContent = 
-                    `Last update: ${new Date().toLocaleTimeString()} (New trade detected)`;
+                    `Last update: ${new Date().toLocaleTimeString()} (Account value: $${currentTotalValue.toLocaleString()})`;
                 
-                lastTradeCount = currentTradeCount;
+                lastTotalValue = currentTotalValue;
             }
         }
 
@@ -1349,7 +1368,7 @@
             }
             document.getElementById('trades-update').textContent = `Last update: ${now}`;
 
-            // Aktualizuj wykres
+            // Aktualizuj wykres przy KAŻDEJ aktualizacji
             updateChart(data);
         }
 
@@ -1394,7 +1413,7 @@
         // Inicjalizacja
         document.addEventListener('DOMContentLoaded', function() {
             console.log('🚀 Trading Dashboard - LIVE MODE');
-            console.log('📍 Dashboard: http://localhost:5000');
+            console.log('📍 Dashboard: http://localhost:5001');
             
             initChart();
             checkBotStatus();
