@@ -88,7 +88,7 @@ def start_bot():
     try:
         if bot_status != "running":
             # Start ICT bot
-            ict_trading_bot = ICTTradingBot(initial_capital=8000, leverage=5)
+            ict_trading_bot = ICTTradingBot(initial_capital=10000, leverage=5)
             
             bot_thread = threading.Thread(target=run_bot)
             bot_thread.daemon = True
