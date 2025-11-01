@@ -17,8 +17,8 @@ bot_status = "stopped"
 
 class TradingData:
     def __init__(self):
-        self.account_value = 8000
-        self.available_cash = 8000
+        self.account_value = 10000
+        self.available_cash = 10000
         self.total_fees = 0
         self.net_realized = 0
         
