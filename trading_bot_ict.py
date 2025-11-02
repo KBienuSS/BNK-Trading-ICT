@@ -59,7 +59,7 @@ class ICTTradingBot:
         
         # PARAMETRY ICT
         self.min_confidence = 0.75  # Wyższy próg dla ICT
-        self.risk_reward_ratio = 3.0  # MIN 1:3 Risk/Reward
+        self.risk_reward_ratio = 2.0  # MIN 1:3 Risk/Reward
         
         # GODZINY HANDLU (Sessiony ICT)
         self.trading_sessions = {
