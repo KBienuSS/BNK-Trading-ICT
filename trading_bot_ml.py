@@ -45,6 +45,7 @@ class LLMTradingBot:
             logging.info("🔑 Klucze API Bybit załadowane - REAL TRADING ENABLED")
         
         # Kapitał wirtualny (fallback)
+        self.initial_capital = initial_capital
         self.virtual_capital = initial_capital
         self.virtual_balance = initial_capital
         self.leverage = leverage
@@ -172,7 +173,8 @@ class LLMTradingBot:
                 'X-BAPI-API-KEY': self.api_key,
                 'X-BAPI-SIGN': signature,
                 'X-BAPI-TIMESTAMP': timestamp,
-                'X-BAPI-RECV-WINDOW': '5000'
+                'X-BAPI-RECV-WINDOW': '5000',
+                'Content-Type': 'application/json'
             }
         
         try:
@@ -188,7 +190,7 @@ class LLMTradingBot:
             data = response.json()
             
             if data.get('retCode') != 0:
-                self.logger.error(f"❌ Bybit API Error: {data.get('retMsg', 'Unknown error')}")
+                self.logger.error(f"❌ Bybit API Error: {data.get('retMsg', 'Unknown error')} (Code: {data.get('retCode')})")
                 return None
                 
             return data.get('result', {})
@@ -199,6 +201,41 @@ class LLMTradingBot:
         except Exception as e:
             self.logger.error(f"❌ Unexpected error in Bybit request: {e}")
             return None
+
+    def check_api_status(self) -> Dict:
+        """Sprawdza status połączenia z Bybit API"""
+        status = {
+            'real_trading': self.real_trading,
+            'api_connected': False,
+            'balance_available': False,
+            'testnet': self.testnet,
+            'message': '',
+            'balance': 0
+        }
+        
+        if not self.real_trading:
+            status['message'] = '🔄 Tryb wirtualny - brak kluczy API'
+            status['balance'] = self.virtual_balance
+            return status
+        
+        try:
+            # Spróbuj pobrać saldo - to sprawdzi czy API działa
+            balance = self.get_account_balance()
+            
+            if balance is not None:
+                status['api_connected'] = True
+                status['balance_available'] = True
+                status['balance'] = balance
+                status['message'] = f'✅ Połączono z Bybit - Saldo: ${balance:.2f}'
+            else:
+                status['api_connected'] = False
+                status['message'] = '❌ Błąd połączenia z Bybit - sprawdź klucze API'
+                
+        except Exception as e:
+            status['api_connected'] = False
+            status['message'] = f'❌ Błąd API: {str(e)}'
+        
+        return status
 
     def get_bybit_price(self, symbol: str) -> Optional[float]:
         """Pobiera aktualną cenę z Bybit API"""
@@ -250,15 +287,17 @@ class LLMTradingBot:
             
             data = self.bybit_request('GET', endpoint, params, private=True)
             if data and 'list' in data and len(data['list']) > 0:
+                # Pobierz całkowite saldo
                 total_equity = float(data['list'][0]['totalEquity'])
-                self.logger.info(f"💰 Rzeczywiste saldo konta: ${total_equity:.2f}")
+                
+                self.logger.info(f"💰 Rzeczywiste saldo konta z Bybit: ${total_equity:.2f}")
                 return total_equity
             else:
-                self.logger.warning("⚠️ Nie udało się pobrać salda konta")
+                self.logger.warning("⚠️ Nie udało się pobrać salda konta z Bybit")
                 return None
                 
         except Exception as e:
-            self.logger.error(f"❌ Error getting account balance: {e}")
+            self.logger.error(f"❌ Error getting account balance from Bybit: {e}")
             return None
 
     def get_current_price(self, symbol: str) -> Optional[float]:
@@ -359,9 +398,10 @@ class LLMTradingBot:
         profile = self.get_current_profile()
         
         # Pobierz rzeczywiste saldo konta
-        real_balance = self.get_account_balance()
-        if real_balance is None:
-            # Fallback do wirtualnego salda
+        api_status = self.check_api_status()
+        if api_status['balance_available']:
+            real_balance = api_status['balance']
+        else:
             real_balance = self.virtual_balance
         
         base_allocation = {
@@ -398,14 +438,13 @@ class LLMTradingBot:
             
         try:
             endpoint = "/v5/order/create"
-            order_type = "Limit"  # Możesz zmienić na "Market" dla zleceń rynkowych
             
             params = {
                 'category': 'linear',
                 'symbol': symbol,
                 'side': 'Buy' if side == 'LONG' else 'Sell',
-                'orderType': order_type,
-                'qty': str(quantity),
+                'orderType': 'Market',  # Zlecenie rynkowe dla prostoty
+                'qty': str(round(quantity, 4)),  # Zaokrąglenie do 4 miejsc
                 'price': str(price),
                 'timeInForce': 'GTC',
                 'leverage': str(self.leverage),
@@ -441,7 +480,7 @@ class LLMTradingBot:
                 'symbol': symbol,
                 'side': close_side,
                 'orderType': 'Market',  # Market order dla szybkiego zamknięcia
-                'qty': str(quantity),
+                'qty': str(round(quantity, 4)),
                 'reduceOnly': True,  # Tylko redukcja pozycji
                 'orderFilter': 'Order'
             }
@@ -503,9 +542,7 @@ class LLMTradingBot:
                 self.virtual_balance = real_balance
                 self.virtual_capital = real_balance
             
-            # Tutaj możesz dodać logikę synchronizacji pozycji
-            # między self.positions a bybit_positions
-            
+            # Log synchronizacji
             self.logger.info(f"🔄 Zsynchronizowano z Bybit - Pozycje: {len(bybit_positions)}, Saldo: ${real_balance:.2f}")
             
         except Exception as e:
@@ -592,7 +629,9 @@ class LLMTradingBot:
         )
         
         # Sprawdź dostępne saldo
-        available_balance = self.get_account_balance() if self.real_trading else self.virtual_balance
+        api_status = self.check_api_status()
+        available_balance = api_status['balance'] if api_status['balance_available'] else self.virtual_balance
+        
         if margin_required > available_balance:
             self.logger.warning(f"💰 Insufficient balance for {symbol}. Required: ${margin_required:.2f}, Available: ${available_balance:.2f}")
             return None
@@ -688,10 +727,10 @@ class LLMTradingBot:
             confidence_count += 1
         
         # Użyj rzeczywistego salda konta
-        real_balance = self.get_account_balance()
-        if real_balance is not None:
-            account_value = real_balance + total_unrealized
-            available_cash = real_balance
+        api_status = self.check_api_status()
+        if api_status['balance_available']:
+            account_value = api_status['balance'] + total_unrealized
+            available_cash = api_status['balance']
         else:
             account_value = self.virtual_capital + total_unrealized
             available_cash = self.virtual_balance
@@ -850,6 +889,9 @@ class LLMTradingBot:
 
     def get_dashboard_data(self):
         """Przygotowuje dane dla dashboardu używając rzeczywistych cen z Bybit API"""
+        # Sprawdź status API i pobierz saldo
+        api_status = self.check_api_status()
+        
         active_positions = []
         total_unrealized_pnl = 0
         
@@ -926,19 +968,21 @@ class LLMTradingBot:
         win_rate = (self.stats['winning_trades'] / total_trades * 100) if total_trades > 0 else 0
         
         # Użyj rzeczywistego salda konta dla obliczeń
-        real_balance = self.get_account_balance()
-        if real_balance is not None:
-            total_return_pct = ((self.dashboard_data['account_value'] - real_balance) / real_balance) * 100
+        current_balance = api_status['balance'] if api_status['balance_available'] else self.virtual_balance
+        
+        if current_balance:
+            total_return_pct = ((current_balance - self.initial_capital) / self.initial_capital) * 100
         else:
-            total_return_pct = ((self.dashboard_data['account_value'] - 10000) / 10000) * 100
+            total_return_pct = 0
         
         return {
             'account_summary': {
-                'total_value': round(self.dashboard_data['account_value'], 2),
-                'available_cash': round(self.dashboard_data['available_cash'], 2),
+                'total_value': round(current_balance, 2) if current_balance else 0,
+                'available_cash': round(current_balance, 2) if current_balance else 0,
                 'net_realized': round(self.dashboard_data['net_realized'], 2),
-                'unrealized_pnl': round(self.dashboard_data['unrealized_pnl'], 2),
-                'real_trading': self.real_trading
+                'unrealized_pnl': round(total_unrealized_pnl, 2),
+                'real_trading': self.real_trading,
+                'real_balance_available': api_status['balance_available']
             },
             'performance_metrics': {
                 'total_return_pct': round(total_return_pct, 2),
@@ -956,13 +1000,16 @@ class LLMTradingBot:
                 'available_profiles': list(self.llm_profiles.keys()),
                 'max_positions': self.max_simultaneous_positions,
                 'leverage': self.leverage,
-                'real_trading': self.real_trading
+                'real_trading': self.real_trading,
+                'real_balance_available': api_status['balance_available'],
+                'api_connected': api_status['api_connected']
             },
+            'api_status': api_status,
             'confidence_levels': confidence_levels,
             'active_positions': active_positions,
             'recent_trades': recent_trades,
             'total_unrealized_pnl': total_unrealized_pnl,
-            'last_update': self.dashboard_data['last_update'].isoformat()
+            'last_update': datetime.now().isoformat()
         }
 
     def save_chart_data(self, chart_data: Dict):
@@ -983,6 +1030,10 @@ class LLMTradingBot:
         self.logger.info("🚀 STARTING LLM-STYLE TRADING STRATEGY")
         self.logger.info(f"🎯 Active Profile: {self.active_profile}")
         self.logger.info(f"🔗 Real Trading: {self.real_trading}")
+        
+        # Sprawdź status API na starcie
+        api_status = self.check_api_status()
+        self.logger.info(f"📊 API Status: {api_status['message']}")
         
         iteration = 0
         while self.is_running:
@@ -1077,6 +1128,15 @@ def get_bot_status():
         'real_trading': trading_bot.real_trading
     })
 
+@app.route('/api/api-status')
+def get_api_status():
+    """Zwraca status połączenia z Bybit API"""
+    try:
+        status = trading_bot.check_api_status()
+        return jsonify(status)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/start-bot', methods=['POST'])
 def start_bot():
     """Uruchamia bota"""
@@ -1158,6 +1218,10 @@ if __name__ == '__main__':
     print("📈 Trading assets: BTC, ETH, SOL, XRP, BNB, DOGE")
     print("💹 Using REAL-TIME prices from Bybit API")
     print(f"🔗 Real Trading Enabled: {trading_bot.real_trading}")
+    
+    # Sprawdź status API na starcie
+    api_status = trading_bot.check_api_status()
+    print(f"📊 API Status: {api_status['message']}")
     
     if not trading_bot.real_trading:
         print("⚠️  WARNING: Running in VIRTUAL MODE - set BYBIT_API_KEY and BYBIT_API_SECRET environment variables for real trading")
