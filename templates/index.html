@@ -692,6 +692,23 @@
             color: #a0a0a0;
             text-transform: uppercase;
         }
+        .api-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+        }
+        
+        .status-indicator {
+            font-size: 14px;
+        }
+        
+        .status-connected { color: #4caf50; }
+        .status-disconnected { color: #f44336; }
+        .status-virtual { color: #ff9800; }
     </style>
 </head>
 <body>
@@ -699,6 +716,10 @@
         <header>
             <div class="logo">BNK Trading - LLM Alpha Arena</div>
             <div class="header-right">
+                <div class="api-status" id="api-status">
+                    <div class="status-indicator" id="status-indicator-api">🔴</div>
+                    <span id="status-text">Sprawdzanie API...</span>
+                </div>
                 <div class="profile-selector">
                     <button class="profile-btn claude" onclick="changeProfile('Claude')">Claude</button>
                     <button class="profile-btn gemini" onclick="changeProfile('Gemini')">Gemini</button>
@@ -1670,6 +1691,42 @@ async function stopBot() {
                 console.error('Error forcing update:', error);
             }
         }
+
+        // Dodaj tę funkcję w sekcji <script>
+        async function checkApiStatus() {
+            try {
+                const response = await fetch('/api/api-status');
+                const status = await response.json();
+                
+                const statusElement = document.getElementById('status-text');
+                const indicatorElement = document.getElementById('status-indicator-api');
+                
+                if (status.real_trading) {
+                    if (status.api_connected) {
+                        indicatorElement.textContent = '🟢';
+                        indicatorElement.className = 'status-indicator status-connected';
+                        statusElement.textContent = `REAL TRADING | ${status.message}`;
+                    } else {
+                        indicatorElement.textContent = '🔴';
+                        indicatorElement.className = 'status-indicator status-disconnected';
+                        statusElement.textContent = `API ERROR | ${status.message}`;
+                    }
+                } else {
+                    indicatorElement.textContent = '🟡';
+                    indicatorElement.className = 'status-indicator status-virtual';
+                    statusElement.textContent = 'VIRTUAL MODE - No API Keys';
+                }
+            } catch (error) {
+                console.error('Error checking API status:', error);
+                document.getElementById('status-indicator-api').textContent = '🔴';
+                document.getElementById('status-text').textContent = 'Error checking API status';
+            }
+        }
+        
+        // Wywołuj co 10 sekund
+        setInterval(checkApiStatus, 10000);
+        // Pierwsze sprawdzenie od razu
+        checkApiStatus();
 
         // Inicjalizacja
         document.addEventListener('DOMContentLoaded', async function() {
