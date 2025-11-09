@@ -142,6 +142,27 @@ class LLMTradingBot:
         self.logger.info(f"📈 Trading assets: {', '.join(self.assets)}")
         self.logger.info(f"🔗 Real Trading: {self.real_trading}")
 
+    def check_available_categories(self):
+        """Sprawdza dostępne kategorie dla konta"""
+        self.logger.info("🔍 Checking available categories...")
+        
+        categories_to_test = ['spot', 'linear', 'inverse', 'option']
+        available_categories = []
+        
+        for category in categories_to_test:
+            endpoint = "/v5/market/tickers"
+            params = {'category': category}
+            
+            data = self.bybit_request('GET', endpoint, params)
+            if data and 'retCode' in data and data['retCode'] == 0:
+                available_categories.append(category)
+                self.logger.info(f"✅ Category '{category}' is available")
+            else:
+                self.logger.info(f"❌ Category '{category}' is NOT available")
+        
+        self.logger.info(f"📊 Available categories: {available_categories}")
+        return available_categories
+
     def generate_bybit_signature(self, params: Dict, timestamp: str, method: str = "GET") -> str:
         """Generuje signature dla Bybit API v5 - POPRAWIONA"""
         try:
@@ -241,12 +262,13 @@ class LLMTradingBot:
             return None
             
     def check_api_status(self) -> Dict:
-        """Sprawdza status połączenia z Bybit API"""
+        """Sprawdza status połączenia z Bybit API - ROZSZERZONA"""
         status = {
             'real_trading': self.real_trading,
             'api_connected': False,
             'balance_available': False,
             'testnet': self.testnet,
+            'available_categories': [],
             'message': '',
             'balance': 0
         }
@@ -257,18 +279,22 @@ class LLMTradingBot:
             return status
         
         try:
-            # Spróbuj pobrać saldo - to sprawdzi czy API działa
+            # Sprawdź dostępne kategorie
+            available_categories = self.check_available_categories()
+            status['available_categories'] = available_categories
+            
+            # Spróbuj pobrać saldo
             balance = self.get_account_balance()
             
             if balance is not None:
                 status['api_connected'] = True
                 status['balance_available'] = True
                 status['balance'] = balance
-                status['message'] = f'✅ Połączono z Bybit - Saldo: ${balance:.2f}'
+                status['message'] = f'✅ Połączono z Bybit - Saldo: ${balance:.2f} - Kategorie: {available_categories}'
             else:
                 status['api_connected'] = False
                 status['message'] = '❌ Błąd połączenia z Bybit - sprawdź klucze API'
-                
+                    
         except Exception as e:
             status['api_connected'] = False
             status['message'] = f'❌ Błąd API: {str(e)}'
