@@ -219,7 +219,7 @@ class LLMTradingBot:
             return ""
     
     def bybit_request(self, method: str, endpoint: str, params: Dict = None, private: bool = False) -> Optional[Dict]:
-        """Wykonuje request do Bybit API - Z ROZSZERZONYM DEBUGOWANIEM"""
+        """Wykonuje request do Bybit API - POPRAWIONA WERSJA Z DEBUGOWANIEM"""
         if not self.real_trading and private:
             self.logger.warning("⚠️ Tryb wirtualny - pomijam request do Bybit")
             return None
@@ -233,7 +233,7 @@ class LLMTradingBot:
                 recv_window = "5000"
                 
                 self.logger.info(f"🔐 Generating signature for private request...")
-                signature = self.generate_bybit_signature(params, timestamp, recv_window)
+                signature = self.generate_bybit_signature(params, timestamp, method)
                 if not signature:
                     self.logger.error("❌ Failed to generate signature")
                     return None
@@ -249,12 +249,12 @@ class LLMTradingBot:
             
             self.logger.info(f"🌐 Making {method} request to: {url}")
             self.logger.info(f"📦 Request params: {params}")
-            self.logger.info(f"📋 Headers: { {k: v for k, v in headers.items() if k != 'X-BAPI-API-KEY'} }")
             
             start_time = time.time()
             if method.upper() == 'GET':
                 response = requests.get(url, params=params, headers=headers, timeout=10)
             elif method.upper() == 'POST':
+                self.logger.info(f"📤 Sending POST with JSON: {params}")
                 response = requests.post(url, json=params, headers=headers, timeout=10)
             else:
                 self.logger.error(f"❌ Nieobsługiwana metoda HTTP: {method}")
@@ -262,6 +262,7 @@ class LLMTradingBot:
             
             response_time = time.time() - start_time
             self.logger.info(f"📨 Response received in {response_time:.2f}s, status: {response.status_code}")
+            self.logger.info(f"📄 Response headers: {dict(response.headers)}")
             
             # Sprawdź czy odpowiedź jest pusta
             if not response.text:
@@ -465,7 +466,7 @@ class LLMTradingBot:
 # trading_bot_ml.py (fragment z poprawioną funkcją place_bybit_order)
 
     def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
-        """Składa zlecenie futures na Bybit - Z ROZSZERZONYM DEBUGOWANIEM"""
+        """Składa zlecenie futures na Bybit - POPRAWIONA WERSJA"""
         
         self.logger.info(f"🚀📦 PLACE_BYBIT_ORDER CALLED: {symbol} {side} Qty: {quantity:.6f} Price: ${price}")
         
@@ -492,8 +493,9 @@ class LLMTradingBot:
             # Ustaw dźwignię PRZED złożeniem zlecenia
             self.logger.info(f"🎚️ Setting leverage {self.leverage}x for {symbol}")
             leverage_set = self.set_leverage(symbol, self.leverage)
-            self.logger.info(f"🔧 Leverage set result: {leverage_set}")
+            self.logger.info(f"🔧 Leverage set result: {leverag e_set}")
             
+            # ✅ DODAJ WIĘCEJ PARAMETRÓW WYMAGANYCH PRZEZ BYBIT
             params = {
                 'category': 'linear',
                 'symbol': symbol,
@@ -501,7 +503,9 @@ class LLMTradingBot:
                 'orderType': 'Market',
                 'qty': quantity_str,
                 'timeInForce': 'GTC',
-                'leverage': str(self.leverage)
+                'leverage': str(self.leverage),
+                'reduceOnly': False,
+                'closeOnTrigger': False
             }
             
             self.logger.info(f"🌐 Sending order to Bybit: {params}")
