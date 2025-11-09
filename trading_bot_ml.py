@@ -147,7 +147,7 @@ class LLMTradingBot:
         try:
             recv_window = "5000"
             
-            # Dla obu metod (GET i POST) używamy query string format
+            # Dla obu metod używamy query string format w signature
             if params:
                 # Konwertuj wszystkie wartości do string i posortuj
                 string_params = {str(k): str(v) for k, v in params.items()}
@@ -180,9 +180,13 @@ class LLMTradingBot:
             
         url = f"{self.base_url}{endpoint}"
         headers = {}
+        request_params = None
+        json_data = None
         
         if private:
             timestamp = str(int(time.time() * 1000))
+            
+            # Dla signature używamy query string format
             signature = self.generate_bybit_signature(params, timestamp, method)
             
             if not signature:
@@ -194,18 +198,24 @@ class LLMTradingBot:
                 'X-BAPI-SIGN': signature,
                 'X-BAPI-TIMESTAMP': timestamp,
                 'X-BAPI-RECV-WINDOW': '5000',
-                'Content-Type': 'application/json'  # Nadal używamy JSON content type
+                'Content-Type': 'application/json'
             }
+            
+            # Dla POST: parametry w JSON body
+            if method.upper() == 'POST':
+                json_data = params
+            else:
+                request_params = params
         
         try:
             self.logger.info(f"🌐 Bybit Request: {method} {url}")
             self.logger.info(f"📦 Request params: {params}")
             
             if method.upper() == 'GET':
-                response = requests.get(url, params=params, headers=headers, timeout=10)
+                response = requests.get(url, params=request_params, headers=headers, timeout=10)
             elif method.upper() == 'POST':
-                # Dla POST: parametry w query string, puste body
-                response = requests.post(url, params=params, headers=headers, timeout=10)
+                # Dla POST: parametry w JSON body
+                response = requests.post(url, json=json_data, headers=headers, timeout=10)
             else:
                 self.logger.error(f"❌ Nieobsługiwana metoda HTTP: {method}")
                 return None
@@ -229,6 +239,7 @@ class LLMTradingBot:
         except Exception as e:
             self.logger.error(f"❌ Unexpected error in Bybit request: {e}")
             return None
+            
     def check_api_status(self) -> Dict:
         """Sprawdza status połączenia z Bybit API"""
         status = {
