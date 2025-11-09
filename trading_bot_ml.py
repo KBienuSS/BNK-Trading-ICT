@@ -465,7 +465,7 @@ class LLMTradingBot:
 # trading_bot_ml.py (fragment z poprawioną funkcją place_bybit_order)
 
     def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
-        """Składa zlecenie futures na Bybit - POPRAWIONA WERSJA"""
+        """Składa zlecenie futures na Bybit - Z ROZSZERZONYM DEBUGOWANIEM"""
         
         self.logger.info(f"🚀📦 PLACE_BYBIT_ORDER CALLED: {symbol} {side} Qty: {quantity:.6f} Price: ${price}")
         
@@ -477,6 +477,8 @@ class LLMTradingBot:
         try:
             # SPRAWDŹ CZY MAMY WYSTARCZAJĄCE SALDO
             api_status = self.check_api_status()
+            self.logger.info(f"💰 API Status: {api_status}")
+            
             if not api_status['balance_available']:
                 self.logger.error("❌ No available balance for real trading")
                 return None
@@ -488,9 +490,9 @@ class LLMTradingBot:
             self.logger.info(f"🔢 Formatted quantity for {symbol}: {quantity_str}")
             
             # Ustaw dźwignię PRZED złożeniem zlecenia
-            if not self.set_leverage(symbol, self.leverage):
-                self.logger.error(f"❌ Failed to set leverage for {symbol}")
-                return None
+            self.logger.info(f"🎚️ Setting leverage {self.leverage}x for {symbol}")
+            leverage_set = self.set_leverage(symbol, self.leverage)
+            self.logger.info(f"🔧 Leverage set result: {leverage_set}")
             
             params = {
                 'category': 'linear',
@@ -503,21 +505,29 @@ class LLMTradingBot:
             }
             
             self.logger.info(f"🌐 Sending order to Bybit: {params}")
+            self.logger.info(f"🔐 Making PRIVATE API request...")
             
-            # Wywołanie API
+            # Wywołanie API z dodatkowym logowaniem
+            start_time = time.time()
             data = self.bybit_request('POST', endpoint, params, private=True)
+            response_time = time.time() - start_time
+            
+            self.logger.info(f"⏱️ API Response time: {response_time:.2f}s")
             
             if data:
-                self.logger.info(f"📊 Bybit response: {data}")
+                self.logger.info(f"📊 Bybit response data: {data}")
                 if 'orderId' in data:
                     order_id = data['orderId']
-                    self.logger.info(f"✅ ORDER SUCCESS: {symbol} {side} - ID: {order_id}")
+                    self.logger.info(f"🎉 ORDER SUCCESS: {symbol} {side} - ID: {order_id}")
                     return order_id
                 else:
-                    self.logger.error(f"❌ No orderId in response: {data}")
+                    self.logger.error(f"❌ No orderId in response. Full response: {data}")
+                    # Sprawdź czy jest komunikat o błędzie
+                    if 'retMsg' in data:
+                        self.logger.error(f"❌ Bybit error message: {data['retMsg']}")
                     return None
             else:
-                self.logger.error("❌ No data returned from Bybit API")
+                self.logger.error("❌ No data returned from Bybit API - possible connection issue")
                 return None
                 
         except Exception as e:
