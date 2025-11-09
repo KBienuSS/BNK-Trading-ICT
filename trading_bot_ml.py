@@ -188,27 +188,37 @@ class LLMTradingBot:
         self.logger.info(f"📊 Available categories: {available_categories}")
         return available_categories
 
-    def generate_bybit_signature(self, params: Dict, timestamp: str, recv_window: str = "5000") -> str:
+    def generate_bybit_signature(self, method: str, params: Dict, timestamp: str, recv_window: str = "5000") -> str:
         """Generuje signature dla Bybit API v5 - POPRAWIONA WERSJA"""
         try:
-            # Podstawowy payload: timestamp + api_key + recv_window
+            # Dla GET: parametry w query string
+            # Dla POST: parametry w JSON body
             signature_payload = timestamp + self.api_key + recv_window
             
-            # Dla POST: parametry muszą być w formacie query string (alfabetycznie)
-            if params:
-                # Konwertuj wszystkie wartości do string i sortuj
-                string_params = {}
-                for key, value in params.items():
-                    string_params[str(key)] = str(value)
-                
-                # Posortuj parametry alfabetycznie po kluczach
-                sorted_params = sorted(string_params.items())
-                
-                # Stwórz query string
-                param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
-                signature_payload += param_str
+            if method.upper() == 'POST':
+                # DLA POST: parametry są w body jako JSON
+                import json
+                if params:
+                    # Używaj dokładnie tego samego JSON który będzie wysłany
+                    content = json.dumps(params, separators=(',', ':'))  # Bez spacji
+                    signature_payload += content
+            else:
+                # DLA GET: parametry w query string
+                if params:
+                    # Konwertuj wszystkie wartości do string
+                    string_params = {}
+                    for key, value in params.items():
+                        string_params[str(key)] = str(value)
+                    
+                    # Posortuj parametry alfabetycznie
+                    sorted_params = sorted(string_params.items())
+                    
+                    # Stwórz query string
+                    param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
+                    signature_payload += param_str
             
             self.logger.info(f"🔐 Signature payload: {signature_payload}")
+            self.logger.info(f"🔐 Payload length: {len(signature_payload)}")
             
             # Generuj signature
             signature = hmac.new(
@@ -227,7 +237,7 @@ class LLMTradingBot:
             return ""
     
     def bybit_request(self, method: str, endpoint: str, params: Dict = None, private: bool = False) -> Optional[Dict]:
-        """Wykonuje request do Bybit API - POPRAWIONA WERSJA"""
+        """Wykonuje request do Bybit API - POPRAWIONA"""
         url = f"{self.base_url}{endpoint}"
         headers = {}
         
@@ -236,8 +246,8 @@ class LLMTradingBot:
                 timestamp = str(int(time.time() * 1000))
                 recv_window = "5000"
                 
-                # Generuj signature z parametrami w query string format
-                signature = self.generate_bybit_signature(params, timestamp, recv_window)
+                # Przekaż metodę do generowania signature
+                signature = self.generate_bybit_signature(method, params, timestamp, recv_window)
                 if not signature:
                     return None
                 
@@ -256,10 +266,12 @@ class LLMTradingBot:
             if method.upper() == 'GET':
                 response = requests.get(url, params=params, headers=headers, timeout=10)
             elif method.upper() == 'POST':
-                # Dla POST: parametry w body JSON, ale signature używa query string
+                # Dla POST: parametry w body JSON
                 response = requests.post(url, json=params, headers=headers, timeout=10)
             else:
                 return None
+            
+            # ... reszta kodu pozostaje bez zmian
             
             self.logger.info(f"📨 Response status: {response.status_code}")
             
@@ -457,23 +469,21 @@ class LLMTradingBot:
         return None
     
     def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
-        """Składa zlecenie futures na Bybit - UPROSZCZONA"""
+        """Składa rzeczywiste zlecenie na Bybit - POPRAWIONA"""
         
-        self.logger.info(f"🚀 PLACE_BYBIT_ORDER: {symbol} {side} Qty: {quantity:.6f}")
+        self.logger.info(f"📦 PLACE_BYBIT_ORDER FUTURES: {symbol} {side} Qty: {quantity:.6f}")
         
         if not self.real_trading:
-            order_id = f"virtual_{int(time.time())}"
-            self.logger.info(f"🔄 Virtual order: {order_id}")
-            return order_id
+            self.logger.info(f"🔄 Tryb wirtualny - symulacja zlecenia futures {side} dla {symbol}")
+            return f"virtual_order_{int(time.time())}"
             
         try:
-            # 1. Ustaw dźwignię
-            self.set_leverage(symbol, self.leverage)
-    
-            # 2. Przygotuj parametry - USUŃ settleCoin
             endpoint = "/v5/order/create"
+            
+            # Formatowanie quantity dla futures
             quantity_str = self.format_quantity(symbol, quantity)
             
+            # Parametry dla futures linear - BEZ settleCoin dla create order
             params = {
                 'category': 'linear',
                 'symbol': symbol,
@@ -481,27 +491,21 @@ class LLMTradingBot:
                 'orderType': 'Market',
                 'qty': quantity_str,
                 'timeInForce': 'GTC',
-                'leverage': str(self.leverage)
-                # USUNIĘTE: 'settleCoin': 'USDT'
             }
             
-            self.logger.info(f"📦 Final order params: {params}")
+            self.logger.info(f"🌐 Futures order params: {params}")
             
-            # 3. Wyślij zlecenie
             data = self.bybit_request('POST', endpoint, params, private=True)
             
             if data and 'orderId' in data:
-                order_id = data['orderId']
-                self.logger.info(f"✅ ORDER SUCCESS: {symbol} {side} - ID: {order_id}")
-                return order_id
+                self.logger.info(f"✅ Futures zlecenie złożone na Bybit: {symbol} {side} - ID: {data['orderId']}")
+                return data['orderId']
             else:
-                self.logger.error(f"❌ ORDER FAILED")
+                self.logger.error(f"❌ Błąd składania zlecenia futures na Bybit dla {symbol}")
                 return None
                 
         except Exception as e:
-            self.logger.error(f"💥 CRITICAL ERROR in place_bybit_order: {e}")
-            import traceback
-            self.logger.error(f"💥 Stack trace: {traceback.format_exc()}")
+            self.logger.error(f"❌ Error placing futures Bybit order: {e}")
             return None
 
     def analyze_simple_momentum(self, symbol: str) -> float:
