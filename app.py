@@ -127,27 +127,16 @@ def force_update():
 def api_status():
     """Check API connection status"""
     try:
-        # Sprawdź czy API keys są skonfigurowane
-        api_key = os.getenv('BYBIT_API_KEY')
-        api_secret = os.getenv('BYBIT_API_SECRET')
-        
-        real_trading = bool(api_key and api_secret)
-        api_connected = False
-        
-        if real_trading:
-            # Spróbuj połączyć się z API Bybit
-            try:
-                # Tutaj dodaj kod testujący połączenie z Bybit
-                # Na razie ustawiamy na False dla demo
-                api_connected = False
-            except:
-                api_connected = False
-        
-        return jsonify({
-            'real_trading': real_trading,
-            'api_connected': api_connected,
-            'message': 'Virtual demo mode' if not real_trading else 'Real trading mode'
-        })
+        if llm_trading_bot:
+            # Użyj funkcji check_api_status() z bota
+            api_status = llm_trading_bot.check_api_status()
+            return jsonify(api_status)
+        else:
+            return jsonify({
+                'real_trading': False,
+                'api_connected': False,
+                'message': 'Bot not initialized'
+            })
         
     except Exception as e:
         return jsonify({
