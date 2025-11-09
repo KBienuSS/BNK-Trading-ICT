@@ -330,6 +330,31 @@ def force_open_position(symbol):
         import traceback
         app.logger.error(f"💥 Stack trace: {traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/check-permissions', methods=['GET'])
+def check_permissions():
+    """Sprawdza uprawnienia konta"""
+    try:
+        # Sprawdź informacje o koncie
+        endpoint = "/v5/account/info"
+        data = bot.bybit_request('GET', endpoint, {}, private=True)
+        
+        if data:
+            return jsonify({
+                "status": "success", 
+                "account_info": data,
+                "message": "Account permissions retrieved"
+            })
+        else:
+            return jsonify({
+                "status": "failed",
+                "message": "Could not retrieve account info - check API permissions"
+            })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Error checking permissions: {str(e)}"
+        })
         
 def run_bot():
     """Run the trading bot in a separate thread"""
