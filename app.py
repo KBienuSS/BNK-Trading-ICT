@@ -57,10 +57,14 @@ def index():
 
 @app.route('/api/trading-data')
 def get_trading_data():
-    if llm_trading_bot and bot_status == "running":  # Zmieniam na llm_trading_bot
+    if llm_trading_bot and bot_status == "running":
         return jsonify(llm_trading_bot.get_dashboard_data())
     else:
-        return jsonify(trading_data.get_trading_data())
+        # Użyj danych z aktywnej instancji bota, nawet jeśli zatrzymana
+        if llm_trading_bot:
+            return jsonify(llm_trading_bot.get_dashboard_data())
+        else:
+            return jsonify(trading_data.get_trading_data())
 
 @app.route('/api/bot-status')
 def get_bot_status():
