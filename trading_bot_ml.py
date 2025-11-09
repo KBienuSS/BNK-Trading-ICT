@@ -727,109 +727,126 @@ class LLMTradingBot:
         
         self.logger.info(f"🔍🔄 OPEN_LLM_POSITION CALLED for {symbol}")
         
-        # POMIŃ WSZYSTKIE CHECKI DLA TESTU
-        current_price = self.get_current_price(symbol)
-        if not current_price:
-            self.logger.warning(f"   ❌ Could not get price for {symbol}")
-            return None
-        
-        # WYMUŚ SYGNAŁ LONG
-        signal = "LONG"
-        confidence = 0.95
-        
-        self.logger.info(f"   🎯 FORCED SIGNAL: {signal}, Confidence: {confidence:.1%}")
-        
-        # POMIŃ CHECK AKTYWNYCH POZYCJI
-        active_positions = sum(1 for p in self.positions.values() if p['status'] == 'ACTIVE')
-        self.logger.info(f"   📊 Active Positions: {active_positions}/{self.max_simultaneous_positions}")
-        
-        # KALKULACJA WIELKOŚCI POZYCJI
-        quantity, position_value, margin_required = self.calculate_position_size(
-            symbol, current_price, confidence
-        )
-        
-        self.logger.info(f"   💰 Calc - Qty: {quantity:.6f}, Value: ${position_value:.2f}, Margin: ${margin_required:.2f}")
-        
-        # SPRAWDŹ SALDO
-        api_status = self.check_api_status()
-        available_balance = api_status['balance'] if api_status['balance_available'] else self.virtual_balance
-        
-        self.logger.info(f"   💵 Available: ${available_balance:.2f}")
-        
-        if margin_required > available_balance:
-            self.logger.warning(f"   ❌ Insufficient balance. Required: ${margin_required:.2f}, Available: ${available_balance:.2f}")
-            return None
-        
-        # SPRAWDŹ MINIMALNĄ WIELKOŚĆ
-        min_order_value = quantity * current_price
-        self.logger.info(f"   📦 Order value: ${min_order_value:.2f}")
-        
-        if min_order_value < 5:  # Minimalne $5
-            self.logger.warning(f"   ❌ Order value too small: ${min_order_value:.2f} < $5")
-            return None
-        
-        self.logger.info(f"   ✅ ALL CHECKS PASSED - ATTEMPTING TO OPEN POSITION")
-        
-        # SKŁADANIE ZLECENIA NA BYBIT
-        # SKŁADANIE ZLECENIA NA BYBIT
-        order_id = self.place_bybit_order(symbol, signal, quantity, current_price)
-        
-        self.logger.info(f"    📨 Order ID from Bybit: {order_id}")
-        
-        if not order_id and self.real_trading:
-            self.logger.error(f"    ❌ Failed to place order on Bybit for {symbol}")
-            return None
+        try:
+            # 1. Pobierz aktualną cenę
+            current_price = self.get_current_price(symbol)
+            self.logger.info(f"💰 Current price for {symbol}: ${current_price}")
             
-        # RESZTA KODU TWORZENIA POZYCJI...
-        exit_plan = self.calculate_llm_exit_plan(current_price, confidence, signal)
-        
-        if signal == "LONG":
-            liquidation_price = current_price * (1 - 0.9 / self.leverage)
-        else:
-            liquidation_price = current_price * (1 + 0.9 / self.leverage)
-        
-        position_id = order_id if order_id else f"virtual_{self.position_id}"
-        self.position_id += 1
-        
-        position = {
-            'symbol': symbol,
-            'side': signal,
-            'entry_price': current_price,
-            'quantity': quantity,
-            'leverage': self.leverage,
-            'margin': margin_required,
-            'liquidation_price': liquidation_price,
-            'entry_time': datetime.now(),
-            'status': 'ACTIVE',
-            'unrealized_pnl': 0,
-            'confidence': confidence,
-            'llm_profile': self.active_profile,
-            'exit_plan': exit_plan,
-            'order_id': order_id,
-            'real_trading': self.real_trading
-        }
-        
-        self.positions[position_id] = position
-        
-        # Aktualizuj saldo tylko w trybie wirtualnym
-        if not self.real_trading:
-            self.virtual_balance -= margin_required
-        
-        if signal == "LONG":
-            self.stats['long_trades'] += 1
-        else:
-            self.stats['short_trades'] += 1
-        
-        tp_distance = (exit_plan['take_profit'] - current_price) / current_price * 100
-        sl_distance = (current_price - exit_plan['stop_loss']) / current_price * 100
-        
-        trading_mode = "REAL" if self.real_trading else "VIRTUAL"
-        self.logger.info(f"🎯 {trading_mode} {self.active_profile} OPEN: {symbol} {signal} @ ${current_price:.4f}")
-        self.logger.info(f"   📊 Confidence: {confidence:.1%} | Size: ${position_value:.2f}")
-        self.logger.info(f"   🎯 TP: {exit_plan['take_profit']:.4f} ({tp_distance:+.2f}%)")
-        self.logger.info(f"   🛑 SL: {exit_plan['stop_loss']:.4f} ({sl_distance:+.2f}%)")
-        
-        return position_id
+            if not current_price:
+                self.logger.warning(f"❌ Could not get price for {symbol}")
+                return None
+            
+            # 2. Wymuś sygnał LONG dla testu
+            signal = "LONG"
+            confidence = 0.95
+            self.logger.info(f"🎯 FORCED SIGNAL: {signal}, Confidence: {confidence:.1%}")
+            
+            # 3. Sprawdź aktywne pozycje
+            active_positions = sum(1 for p in self.positions.values() if p['status'] == 'ACTIVE')
+            self.logger.info(f"📊 Active Positions: {active_positions}/{self.max_simultaneous_positions}")
+            
+            if active_positions >= self.max_simultaneous_positions:
+                self.logger.warning(f"❌ Max positions reached: {active_positions}")
+                return None
+            
+            # 4. Kalkulacja wielkości pozycji
+            quantity, position_value, margin_required = self.calculate_position_size(
+                symbol, current_price, confidence
+            )
+            
+            self.logger.info(f"💰 Calc - Qty: {quantity:.6f}, Value: ${position_value:.2f}, Margin: ${margin_required:.2f}")
+            
+            # 5. Sprawdź saldo
+            api_status = self.check_api_status()
+            available_balance = api_status['balance'] if api_status['balance_available'] else self.virtual_balance
+            
+            self.logger.info(f"💵 Available balance: ${available_balance:.2f}")
+            
+            if margin_required > available_balance:
+                self.logger.warning(f"❌ Insufficient balance. Required: ${margin_required:.2f}, Available: ${available_balance:.2f}")
+                return None
+            
+            # 6. Sprawdź minimalną wielkość zlecenia
+            min_order_value = quantity * current_price
+            self.logger.info(f"📦 Order value: ${min_order_value:.2f}")
+            
+            if min_order_value < 5:  # Minimalne $5 dla Bybit
+                self.logger.warning(f"❌ Order value too small: ${min_order_value:.2f} < $5")
+                return None
+            
+            self.logger.info(f"✅ ALL CHECKS PASSED - ATTEMPTING TO OPEN POSITION")
+            
+            # 7. SKŁADANIE ZLECENIA NA BYBIT
+            self.logger.info(f"🚀 Calling place_bybit_order for {symbol}")
+            order_id = self.place_bybit_order(symbol, signal, quantity, current_price)
+            
+            self.logger.info(f"📨 Order ID from Bybit: {order_id}")
+            
+            if not order_id:
+                if self.real_trading:
+                    self.logger.error(f"❌ Failed to place order on Bybit for {symbol}")
+                else:
+                    self.logger.error(f"❌ Failed to create virtual order for {symbol}")
+                return None
+            
+            # 8. Tworzenie rekordu pozycji
+            self.logger.info(f"📝 Creating position record for {symbol}")
+            exit_plan = self.calculate_llm_exit_plan(current_price, confidence, signal)
+            
+            if signal == "LONG":
+                liquidation_price = current_price * (1 - 0.9 / self.leverage)
+            else:
+                liquidation_price = current_price * (1 + 0.9 / self.leverage)
+            
+            position_id = order_id if order_id else f"virtual_{self.position_id}"
+            self.position_id += 1
+            
+            position = {
+                'symbol': symbol,
+                'side': signal,
+                'entry_price': current_price,
+                'quantity': quantity,
+                'leverage': self.leverage,
+                'margin': margin_required,
+                'liquidation_price': liquidation_price,
+                'entry_time': datetime.now(),
+                'status': 'ACTIVE',
+                'unrealized_pnl': 0,
+                'confidence': confidence,
+                'llm_profile': self.active_profile,
+                'exit_plan': exit_plan,
+                'order_id': order_id,
+                'real_trading': self.real_trading
+            }
+            
+            self.positions[position_id] = position
+            
+            # Aktualizuj saldo tylko w trybie wirtualnym
+            if not self.real_trading:
+                self.virtual_balance -= margin_required
+            
+            if signal == "LONG":
+                self.stats['long_trades'] += 1
+            else:
+                self.stats['short_trades'] += 1
+            
+            # Logowanie sukcesu
+            tp_distance = (exit_plan['take_profit'] - current_price) / current_price * 100
+            sl_distance = (current_price - exit_plan['stop_loss']) / current_price * 100
+            
+            trading_mode = "REAL" if self.real_trading else "VIRTUAL"
+            self.logger.info(f"🎉 SUCCESS: {trading_mode} {self.active_profile} OPEN: {symbol} {signal} @ ${current_price:.4f}")
+            self.logger.info(f"   📊 Confidence: {confidence:.1%} | Size: ${position_value:.2f}")
+            self.logger.info(f"   🎯 TP: {exit_plan['take_profit']:.4f} ({tp_distance:+.2f}%)")
+            self.logger.info(f"   🛑 SL: {exit_plan['stop_loss']:.4f} ({sl_distance:+.2f}%)")
+            
+            return position_id
+            
+        except Exception as e:
+            self.logger.error(f"💥 CRITICAL ERROR in open_llm_position: {e}")
+            import traceback
+            self.logger.error(f"💥 Stack trace: {traceback.format_exc()}")
+            return None
 
     def update_positions_pnl(self):
         """Aktualizuje P&L wszystkich pozycji używając rzeczywistych cen z Bybit API"""
