@@ -459,6 +459,9 @@ class LLMTradingBot:
 
     def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
         """Składa rzeczywiste zlecenie na Bybit"""
+        
+        self.logger.info(f"📦 PLACE_BYBIT_ORDER: {symbol} {side} Qty: {quantity:.6f} Price: ${price}")
+        
         if not self.real_trading:
             self.logger.info(f"🔄 Tryb wirtualny - symulacja zlecenia {side} dla {symbol}")
             return f"virtual_order_{int(time.time())}"
@@ -470,15 +473,18 @@ class LLMTradingBot:
                 'category': 'linear',
                 'symbol': symbol,
                 'side': 'Buy' if side == 'LONG' else 'Sell',
-                'orderType': 'Market',  # Zlecenie rynkowe dla prostoty
-                'qty': str(round(quantity, 4)),  # Zaokrąglenie do 4 miejsc
+                'orderType': 'Market',
+                'qty': str(round(quantity, 4)),
                 'price': str(price),
                 'timeInForce': 'GTC',
                 'leverage': str(self.leverage),
                 'orderFilter': 'Order'
             }
             
+            self.logger.info(f"🌐 Bybit order params: {params}")
+            
             data = self.bybit_request('POST', endpoint, params, private=True)
+            
             if data and 'orderId' in data:
                 self.logger.info(f"✅ Zlecenie złożone na Bybit: {symbol} {side} - ID: {data['orderId']}")
                 return data['orderId']
@@ -653,74 +659,58 @@ class LLMTradingBot:
     def open_llm_position(self, symbol: str):
         """Otwiera pozycję w stylu LLM używając rzeczywistych cen z Bybit API"""
         
-        # TYMCZASOWY BYPASS - ZAWSZE WEJDŹ JEŚLI SYGNAŁ LONG/SHORT
+        self.logger.info(f"🔍🔄 OPEN_LLM_POSITION CALLED for {symbol}")
+        
+        # POMIŃ WSZYSTKIE CHECKI DLA TESTU
         current_price = self.get_current_price(symbol)
         if not current_price:
+            self.logger.warning(f"   ❌ Could not get price for {symbol}")
             return None
-            
-        signal, confidence = self.generate_llm_signal(symbol)
         
-        # JEŚLI SYGNAŁ LONG/SHORT, POMIŃ CHECK CZĘSTOTLIWOŚCI
-        if signal in ["LONG", "SHORT"] and confidence >= 0.3:
-            self.logger.info(f"🎯🔄 FORCING ENTRY for {symbol} - Signal: {signal}, Conf: {confidence:.1%}")
-            # Pomiń should_enter_trade check dla LONG/SHORT sygnałów
-            pass
-        else:
-            # Normalna logika dla HOLD
-            if not self.should_enter_trade():
-                return None
-            if signal == "HOLD" or confidence < 0.3:
-                return None
+        # WYMUŚ SYGNAŁ LONG
+        signal = "LONG"
+        confidence = 0.95
         
-            
+        self.logger.info(f"   🎯 FORCED SIGNAL: {signal}, Confidence: {confidence:.1%}")
+        
+        # POMIŃ CHECK AKTYWNYCH POZYCJI
         active_positions = sum(1 for p in self.positions.values() if p['status'] == 'ACTIVE')
         self.logger.info(f"   📊 Active Positions: {active_positions}/{self.max_simultaneous_positions}")
         
-        if active_positions >= self.max_simultaneous_positions:
-            self.logger.info(f"   ❌ Max positions reached")
-            return None
-        
-        # SPRAWDZENIE WIELKOŚCI POZYCJI
+        # KALKULACJA WIELKOŚCI POZYCJI
         quantity, position_value, margin_required = self.calculate_position_size(
             symbol, current_price, confidence
         )
         
-        self.logger.info(f"   💰 Position calc - Qty: {quantity}, Value: ${position_value:.2f}, Margin: ${margin_required:.2f}")
-
-        # Po obliczeniu quantity, przed sprawdzeniem salda
-        if not self.check_minimum_order(symbol, quantity, current_price):
-            return None
+        self.logger.info(f"   💰 Calc - Qty: {quantity:.6f}, Value: ${position_value:.2f}, Margin: ${margin_required:.2f}")
         
-        # Sprawdź dostępne saldo
+        # SPRAWDŹ SALDO
         api_status = self.check_api_status()
         available_balance = api_status['balance'] if api_status['balance_available'] else self.virtual_balance
         
-        self.logger.info(f"   💵 Available balance: ${available_balance:.2f}")
+        self.logger.info(f"   💵 Available: ${available_balance:.2f}")
         
         if margin_required > available_balance:
             self.logger.warning(f"   ❌ Insufficient balance. Required: ${margin_required:.2f}, Available: ${available_balance:.2f}")
             return None
         
-        self.logger.info(f"   ✅ ALL CONDITIONS MET - OPENING POSITION for {symbol}")
-    
-    # Reszta kodu do otwarcia pozycji...
-            
-        quantity, position_value, margin_required = self.calculate_position_size(
-            symbol, current_price, confidence
-        )
+        # SPRAWDŹ MINIMALNĄ WIELKOŚĆ
+        min_order_value = quantity * current_price
+        self.logger.info(f"   📦 Order value: ${min_order_value:.2f}")
         
-        # Sprawdź dostępne saldo
-        api_status = self.check_api_status()
-        available_balance = api_status['balance'] if api_status['balance_available'] else self.virtual_balance
-        
-        if margin_required > available_balance:
-            self.logger.warning(f"💰 Insufficient balance for {symbol}. Required: ${margin_required:.2f}, Available: ${available_balance:.2f}")
+        if min_order_value < 5:  # Minimalne $5
+            self.logger.warning(f"   ❌ Order value too small: ${min_order_value:.2f} < $5")
             return None
         
-        # Składanie rzeczywistego zlecenia na Bybit
+        self.logger.info(f"   ✅ ALL CHECKS PASSED - ATTEMPTING TO OPEN POSITION")
+        
+        # SKŁADANIE ZLECENIA NA BYBIT
         order_id = self.place_bybit_order(symbol, signal, quantity, current_price)
+        
+        self.logger.info(f"   📨 Order ID from Bybit: {order_id}")
+        
         if not order_id and self.real_trading:
-            self.logger.error(f"❌ Failed to place order on Bybit for {symbol}")
+            self.logger.error(f"   ❌ Failed to place order on Bybit for {symbol}")
             return None
             
         exit_plan = self.calculate_llm_exit_plan(current_price, confidence, signal)
