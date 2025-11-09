@@ -143,27 +143,32 @@ class LLMTradingBot:
         self.logger.info(f"🔗 Real Trading: {self.real_trading}")
 
     def generate_bybit_signature(self, params: Dict, timestamp: str) -> str:
-        """Generuje signature dla Bybit API v5"""
-        # Dla requestów GET: timestamp + api_key + recv_window + params
-        # Dla requestów POST: timestamp + api_key + recv_window + json_params
-        
-        recv_window = "5000"
-        
-        if params:
-            # Posortuj parametry alfabetycznie
-            sorted_params = sorted(params.items())
-            param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
-            signature_payload = timestamp + self.api_key + recv_window + param_str
-        else:
-            signature_payload = timestamp + self.api_key + recv_window
-        
-        signature = hmac.new(
-            bytes(self.api_secret, "utf-8"),
-            signature_payload.encode("utf-8"),
-            hashlib.sha256
-        ).hexdigest()
-        
-        return signature
+        """Generuje signature dla Bybit API v5 - POPRAWIONA WERSJA"""
+        try:
+            recv_window = "5000"
+            
+            # Dla POST requests, parametry są w JSON body
+            if params:
+                # Konwertuj parametry do stringa JSON
+                param_str = json.dumps(params, separators=(',', ':'))
+                signature_payload = timestamp + self.api_key + recv_window + param_str
+            else:
+                signature_payload = timestamp + self.api_key + recv_window
+            
+            self.logger.info(f"🔐 Signature payload: {signature_payload}")
+            
+            signature = hmac.new(
+                bytes(self.api_secret, "utf-8"),
+                signature_payload.encode("utf-8"),
+                hashlib.sha256
+            ).hexdigest()
+            
+            self.logger.info(f"✅ Generated signature: {signature}")
+            return signature
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error generating signature: {e}")
+            return ""
 
     def bybit_request(self, method: str, endpoint: str, params: Dict = None, private: bool = False) -> Optional[Dict]:
         """Wykonuje request do Bybit API"""
