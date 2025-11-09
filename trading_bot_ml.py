@@ -30,10 +30,11 @@ class LLMTradingBot:
         # Konfiguracja Bybit API
         self.api_key = api_key or os.getenv('BYBIT_API_KEY')
         self.api_secret = api_secret or os.getenv('BYBIT_API_SECRET')
-        
-        # MAINNET - prawdziwy trading
-        self.testnet = False
         self.base_url = "https://api.bybit.com"
+        self.testnet = False  # Ustaw na True dla testnet
+        
+        if self.testnet:
+            self.base_url = "https://api-testnet.bybit.com"
         
         # Sprawdź czy klucze API są dostępne
         if not self.api_key or not self.api_secret:
@@ -41,7 +42,7 @@ class LLMTradingBot:
             self.real_trading = False
         else:
             self.real_trading = True
-            logging.info("🔑 Klucze API Bybit MAINNET załadowane - REAL TRADING ENABLED")
+            logging.info("🔑 Klucze API Bybit załadowane - REAL TRADING ENABLED")
         
         # Kapitał wirtualny (fallback)
         self.initial_capital = initial_capital
@@ -146,15 +147,15 @@ class LLMTradingBot:
         try:
             recv_window = "5000"
             
-            # Dla POST requests w v5, signature jest tworzone inaczej
+            # Dla POST requests, parametry są w JSON body
             if params:
-                # Konwertuj parametry do stringa JSON bez spacji
+                # Konwertuj parametry do stringa JSON
                 param_str = json.dumps(params, separators=(',', ':'))
                 signature_payload = timestamp + self.api_key + recv_window + param_str
             else:
                 signature_payload = timestamp + self.api_key + recv_window
             
-            self.logger.info(f"🔐 Signature payload length: {len(signature_payload)}")
+            self.logger.info(f"🔐 Signature payload: {signature_payload}")
             
             signature = hmac.new(
                 bytes(self.api_secret, "utf-8"),
@@ -162,6 +163,7 @@ class LLMTradingBot:
                 hashlib.sha256
             ).hexdigest()
             
+            self.logger.info(f"✅ Generated signature: {signature}")
             return signature
             
         except Exception as e:
@@ -474,7 +476,10 @@ class LLMTradingBot:
         return quantity, position_value, margin_required
 
     def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
-        """Składa rzeczywiste zlecenie na Bybit MAINNET"""
+        """Składa rzeczywiste zlecenie na Bybit"""
+        
+        self.logger.info(f"📦 PLACE_BYBIT_ORDER: {symbol} {side} Qty: {quantity:.6f} Price: ${price}")
+        
         if not self.real_trading:
             self.logger.info(f"🔄 Tryb wirtualny - symulacja zlecenia {side} dla {symbol}")
             return f"virtual_order_{int(time.time())}"
@@ -482,30 +487,31 @@ class LLMTradingBot:
         try:
             endpoint = "/v5/order/create"
             
-            # POPRAWIONE PARAMETRY dla Bybit v5
             params = {
                 'category': 'linear',
                 'symbol': symbol,
                 'side': 'Buy' if side == 'LONG' else 'Sell',
                 'orderType': 'Market',
-                'qty': str(quantity),  # Nie zaokrąglaj - Bybit sam obsłuży
+                'qty': str(round(quantity, 4)),
+                'price': str(price),
                 'timeInForce': 'GTC',
                 'leverage': str(self.leverage),
+                'orderFilter': 'Order'
             }
             
-            self.logger.info(f"📦 Bybit order params: {params}")
+            self.logger.info(f"🌐 Bybit order params: {params}")
             
             data = self.bybit_request('POST', endpoint, params, private=True)
             
             if data and 'orderId' in data:
-                self.logger.info(f"✅ Zlecenie złożone na Bybit MAINNET: {symbol} {side} - ID: {data['orderId']}")
+                self.logger.info(f"✅ Zlecenie złożone na Bybit: {symbol} {side} - ID: {data['orderId']}")
                 return data['orderId']
             else:
-                self.logger.error(f"❌ Błąd składania zlecenia na Bybit MAINNET dla {symbol}")
+                self.logger.error(f"❌ Błąd składania zlecenia na Bybit dla {symbol}")
                 return None
                 
         except Exception as e:
-            self.logger.error(f"❌ Error placing Bybit MAINNET order: {e}")
+            self.logger.error(f"❌ Error placing Bybit order: {e}")
             return None
 
     def close_bybit_position(self, symbol: str, side: str, quantity: float) -> bool:
