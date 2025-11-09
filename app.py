@@ -6,6 +6,10 @@ import logging
 from datetime import datetime, timedelta
 import random
 import requests
+from dotenv import load_dotenv  # Dodaj tę linię
+
+# Załaduj zmienne środowiskowe z pliku .env
+load_dotenv()
 
 # Zmieniam import na LLMTradingBot zamiast MLTradingBot
 from trading_bot_ml import LLMTradingBot
