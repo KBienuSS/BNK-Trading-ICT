@@ -104,6 +104,38 @@ def stop_bot():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/debug-api', methods=['GET'])
+def debug_api():
+    """Debuguje połączenie API"""
+    try:
+        if bot is None:
+            return jsonify({"status": "error", "message": "Bot not initialized"}), 500
+            
+        # Test podstawowego requesta
+        test_symbol = "BTCUSDT"
+        
+        # 1. Test publicznego API (ceny)
+        price = bot.get_current_price(test_symbol)
+        
+        # 2. Test prywatnego API (saldo)
+        api_status = bot.check_api_status()
+        
+        # 3. Test ustawienia dźwigni
+        leverage_set = bot.set_leverage(test_symbol, bot.leverage)
+        
+        return jsonify({
+            "status": "success",
+            "public_api_working": price is not None,
+            "price": price,
+            "private_api_working": api_status['api_connected'],
+            "balance_available": api_status['balance_available'],
+            "leverage_set": leverage_set,
+            "api_status": api_status
+        })
+        
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+        
 @app.route('/api/test-order', methods=['POST'])
 def test_order():
     """Endpoint do bezpośredniego testowania składania zleceń"""
