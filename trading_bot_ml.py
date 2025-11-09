@@ -143,21 +143,29 @@ class LLMTradingBot:
         self.logger.info(f"🔗 Real Trading: {self.real_trading}")
 
     def generate_bybit_signature(self, params: Dict, timestamp: str, method: str = "GET") -> str:
-        """Generuje signature dla Bybit API v5 - POPRAWIONA"""
+        """Generuje signature dla Bybit API v5 - POPRAWIONA WERSJA"""
         try:
             recv_window = "5000"
             
-            if method.upper() == "GET" and params:
+            if method.upper() == "GET":
                 # Dla GET: parametry w query string
-                sorted_params = sorted(params.items())
-                param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
-                signature_payload = timestamp + self.api_key + recv_window + param_str
-            elif method.upper() == "POST" and params:
-                # Dla POST: parametry w JSON body
-                param_str = json.dumps(params, separators=(',', ':'))
-                signature_payload = timestamp + self.api_key + recv_window + param_str
+                if params:
+                    sorted_params = sorted(params.items())
+                    param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
+                    signature_payload = timestamp + self.api_key + recv_window + param_str
+                else:
+                    signature_payload = timestamp + self.api_key + recv_window
+                    
+            elif method.upper() == "POST":
+                # Dla POST: parametry muszą być w formacie query string, nie JSON
+                if params:
+                    # Konwertuj parametry do formatu query string (klucz=wartość)
+                    sorted_params = sorted(params.items())
+                    param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
+                    signature_payload = timestamp + self.api_key + recv_window + param_str
+                else:
+                    signature_payload = timestamp + self.api_key + recv_window
             else:
-                # Bez parametrów
                 signature_payload = timestamp + self.api_key + recv_window
             
             self.logger.info(f"🔐 Signature payload: {signature_payload}")
@@ -487,7 +495,7 @@ class LLMTradingBot:
         return quantity, position_value, margin_required
 
     def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
-        """Składa rzeczywiste zlecenie na Bybit"""
+        """Składa rzeczywiste zlecenie na Bybit - POPRAWIONA WERSJA"""
         
         self.logger.info(f"📦 PLACE_BYBIT_ORDER: {symbol} {side} Qty: {quantity:.6f} Price: ${price}")
         
@@ -498,17 +506,22 @@ class LLMTradingBot:
         try:
             endpoint = "/v5/order/create"
             
+            # Formatowanie quantity zgodnie z wymaganiami Bybit
+            # Dla BTCUSDT: 0.001, dla ETHUSDT: 0.01, itd.
+            quantity_str = self.format_quantity(symbol, quantity)
+            
             params = {
                 'category': 'linear',
                 'symbol': symbol,
                 'side': 'Buy' if side == 'LONG' else 'Sell',
                 'orderType': 'Market',
-                'qty': str(round(quantity, 4)),
-                'price': str(price),
+                'qty': quantity_str,
                 'timeInForce': 'GTC',
-                'leverage': str(self.leverage),
-                'orderFilter': 'Order'
+                'leverage': str(self.leverage)
             }
+            
+            # Dla zleceń market nie podajemy ceny
+            # 'price': str(price)  # NIE UŻYWAJ DLA MARKET ORDERS
             
             self.logger.info(f"🌐 Bybit order params: {params}")
             
@@ -524,6 +537,30 @@ class LLMTradingBot:
         except Exception as e:
             self.logger.error(f"❌ Error placing Bybit order: {e}")
             return None
+
+    def format_quantity(self, symbol: str, quantity: float) -> str:
+        """Formatuje ilość zgodnie z wymaganiami Bybit dla każdego symbolu"""
+        # Wymagania lot size dla różnych symboli
+        lot_size_rules = {
+            'BTCUSDT': 0.001,  # 0.001 BTC
+            'ETHUSDT': 0.01,   # 0.01 ETH
+            'SOLUSDT': 0.01,   # 0.01 SOL
+            'XRPUSDT': 1,      # 1 XRP
+            'BNBUSDT': 0.001,  # 0.001 BNB
+            'DOGEUSDT': 1,     # 1 DOGE
+        }
+        
+        lot_size = lot_size_rules.get(symbol, 0.001)
+        formatted_quantity = round(quantity / lot_size) * lot_size
+        
+        # Zaokrąglij do odpowiedniej liczby miejsc po przecinku
+        if lot_size >= 1:
+            formatted_quantity = int(formatted_quantity)
+        else:
+            decimals = len(str(lot_size).split('.')[1])
+            formatted_quantity = round(formatted_quantity, decimals)
+        
+        return str(formatted_quantity)
 
     def close_bybit_position(self, symbol: str, side: str, quantity: float) -> bool:
         """Zamyka pozycję na Bybit"""
