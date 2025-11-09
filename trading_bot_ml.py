@@ -635,7 +635,7 @@ class LLMTradingBot:
     def open_llm_position(self, symbol: str):
         """Otwiera pozycję w stylu LLM używając rzeczywistych cen z Bybit API"""
         
-        self.logger.info(f"🔍 DEBUG ENTRY CHECK for {symbol}")
+        self.logger.info(f"🔍 ENTRY ATTEMPT for {symbol}")
         
         if not self.should_enter_trade():
             self.logger.info(f"   ❌ Profile frequency check failed")
@@ -643,6 +643,7 @@ class LLMTradingBot:
             
         current_price = self.get_current_price(symbol)
         if not current_price:
+            self.logger.warning(f"   ❌ Could not get price for {symbol}")
             return None
             
         signal, confidence = self.generate_llm_signal(symbol)
@@ -659,8 +660,26 @@ class LLMTradingBot:
             self.logger.info(f"   ❌ Max positions reached")
             return None
         
-        self.logger.info(f"   ✅ ALL CONDITIONS MET - OPENING POSITION")
-        # Reszta kodu...
+        # SPRAWDZENIE WIELKOŚCI POZYCJI
+        quantity, position_value, margin_required = self.calculate_position_size(
+            symbol, current_price, confidence
+        )
+        
+        self.logger.info(f"   💰 Position calc - Qty: {quantity}, Value: ${position_value:.2f}, Margin: ${margin_required:.2f}")
+        
+        # Sprawdź dostępne saldo
+        api_status = self.check_api_status()
+        available_balance = api_status['balance'] if api_status['balance_available'] else self.virtual_balance
+        
+        self.logger.info(f"   💵 Available balance: ${available_balance:.2f}")
+        
+        if margin_required > available_balance:
+            self.logger.warning(f"   ❌ Insufficient balance. Required: ${margin_required:.2f}, Available: ${available_balance:.2f}")
+            return None
+        
+        self.logger.info(f"   ✅ ALL CONDITIONS MET - OPENING POSITION for {symbol}")
+    
+    # Reszta kodu do otwarcia pozycji...
             
         quantity, position_value, margin_required = self.calculate_position_size(
             symbol, current_price, confidence
