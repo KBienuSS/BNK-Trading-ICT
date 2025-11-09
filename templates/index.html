@@ -43,21 +43,46 @@
         
         header {
             display: flex;
-            justify-content: space-between;
-            align-items: center;
+            flex-direction: column;
             padding: 15px 0;
             border-bottom: 1px solid var(--border-color);
             margin-bottom: 20px;
+            width: 100%;
+        }
+        
+        .header-top {
+            display: flex;
+            justify-content: center;
+            width: 100%;
+            margin-bottom: 15px;
         }
         
         .logo {
             font-size: 24px;
             font-weight: bold;
             color: #4cc9f0;
+            text-align: center;
+            width: 100%;
+        }
+        
+        .header-bottom {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+            gap: 20px;
+        }
+        
+        .header-left {
+            flex: 1;
+            display: flex;
+            justify-content: flex-start;
         }
         
         .header-right {
+            flex: 1;
             display: flex;
+            justify-content: flex-end;
             align-items: center;
             gap: 20px;
         }
@@ -416,57 +441,6 @@
             background-color: #0d2a4d;
         }
         
-        @media (max-width: 1200px) {
-            .top-row {
-                grid-template-columns: 1fr;
-            }
-            
-            .bottom-row {
-                grid-template-columns: 1fr;
-            }
-            
-            .header-right {
-                flex-direction: column;
-                gap: 10px;
-            }
-            
-            .confidence-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-        }
-        
-        @media (max-width: 768px) {
-            .positions-table {
-                font-size: 12px;
-            }
-            
-            .trades-table {
-                font-size: 12px;
-            }
-            
-            .positions-table th,
-            .positions-table td {
-                padding: 8px 4px;
-            }
-            
-            .trades-table th,
-            .trades-table td {
-                padding: 8px 4px;
-            }
-            
-            .btc-price-widget {
-                min-width: 150px;
-                padding: 6px 12px;
-            }
-            
-            .btc-price {
-                font-size: 14px;
-            }
-            
-            .confidence-grid {
-                grid-template-columns: 1fr;
-            }
-        }
         .crypto-prices-widget {
             background: linear-gradient(135deg, var(--accent-color), var(--secondary-color));
             border-radius: 8px;
@@ -588,68 +562,6 @@
             animation: priceUpdate 1s ease-in-out;
         }
         
-        @media (max-width: 1200px) {
-            .crypto-prices-container {
-                grid-template-columns: repeat(3, 1fr);
-            }
-        }
-        
-        @media (max-width: 768px) {
-            .crypto-prices-container {
-                grid-template-columns: repeat(2, 1fr);
-                gap: 12px;
-            }
-            
-            .crypto-item {
-                padding: 10px 12px;
-                gap: 10px;
-                min-height: 65px;
-            }
-            
-            .crypto-price {
-                font-size: 15px;
-            }
-            
-            .crypto-change {
-                font-size: 10px;
-                padding: 3px 6px;
-                top: 6px;
-                right: 6px;
-            }
-            
-            .crypto-icon {
-                font-size: 20px;
-                min-width: 24px;
-            }
-        }
-        
-        @media (max-width: 480px) {
-            .crypto-prices-container {
-                grid-template-columns: 1fr;
-                gap: 10px;
-            }
-            
-            .crypto-prices-widget {
-                padding: 12px 15px;
-            }
-            
-            .crypto-item {
-                padding: 8px 12px;
-                min-height: 60px;
-            }
-            
-            .crypto-price {
-                font-size: 14px;
-            }
-            
-            .crypto-change {
-                font-size: 9px;
-                padding: 2px 5px;
-                top: 5px;
-                right: 5px;
-            }
-        }
-
         /* LLM Profile Badge */
         .llm-profile-badge {
             display: inline-block;
@@ -692,6 +604,7 @@
             color: #a0a0a0;
             text-transform: uppercase;
         }
+        
         .api-status {
             display: flex;
             align-items: center;
@@ -709,29 +622,189 @@
         .status-connected { color: #4caf50; }
         .status-disconnected { color: #f44336; }
         .status-virtual { color: #ff9800; }
+
+        /* New styles for won trades */
+        .won-trades-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 10px;
+        }
+        
+        .won-trade-item {
+            text-align: center;
+            padding: 8px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 6px;
+        }
+        
+        .won-trade-value {
+            font-size: 14px;
+            font-weight: bold;
+            margin: 4px 0;
+            color: var(--profit-color);
+        }
+        
+        .won-trade-label {
+            font-size: 10px;
+            color: #a0a0a0;
+            text-transform: uppercase;
+        }
+        
+        @media (max-width: 1200px) {
+            .top-row {
+                grid-template-columns: 1fr;
+            }
+            
+            .bottom-row {
+                grid-template-columns: 1fr;
+            }
+            
+            .header-bottom {
+                flex-direction: column;
+                gap: 15px;
+            }
+            
+            .header-left, .header-right {
+                justify-content: center;
+                width: 100%;
+            }
+            
+            .confidence-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            
+            .crypto-prices-container {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+        
+        @media (max-width: 768px) {
+            .positions-table {
+                font-size: 12px;
+            }
+            
+            .trades-table {
+                font-size: 12px;
+            }
+            
+            .positions-table th,
+            .positions-table td {
+                padding: 8px 4px;
+            }
+            
+            .trades-table th,
+            .trades-table td {
+                padding: 8px 4px;
+            }
+            
+            .btc-price-widget {
+                min-width: 150px;
+                padding: 6px 12px;
+            }
+            
+            .btc-price {
+                font-size: 14px;
+            }
+            
+            .confidence-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .crypto-prices-container {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 12px;
+            }
+            
+            .crypto-item {
+                padding: 10px 12px;
+                gap: 10px;
+                min-height: 65px;
+            }
+            
+            .crypto-price {
+                font-size: 15px;
+            }
+            
+            .crypto-change {
+                font-size: 10px;
+                padding: 3px 6px;
+                top: 6px;
+                right: 6px;
+            }
+            
+            .crypto-icon {
+                font-size: 20px;
+                min-width: 24px;
+            }
+            
+            .performance-stats {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+        
+        @media (max-width: 480px) {
+            .crypto-prices-container {
+                grid-template-columns: 1fr;
+                gap: 10px;
+            }
+            
+            .crypto-prices-widget {
+                padding: 12px 15px;
+            }
+            
+            .crypto-item {
+                padding: 8px 12px;
+                min-height: 60px;
+            }
+            
+            .crypto-price {
+                font-size: 14px;
+            }
+            
+            .crypto-change {
+                font-size: 9px;
+                padding: 2px 5px;
+                top: 5px;
+                right: 5px;
+            }
+            
+            .performance-stats {
+                grid-template-columns: 1fr;
+            }
+            
+            .won-trades-grid {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <div class="logo">BNK Trading - LLM Alpha Arena</div>
-            <div class="header-right">
-                <div class="api-status" id="api-status">
-                    <div class="status-indicator" id="status-indicator-api">🔴</div>
-                    <span id="status-text">Sprawdzanie API...</span>
+            <div class="header-top">
+                <div class="logo">BNK Trading - LLM Alpha Arena</div>
+            </div>
+            <div class="header-bottom">
+                <div class="header-left">
+                    <div class="profile-selector">
+                        <button class="profile-btn claude" onclick="changeProfile('Claude')">Claude</button>
+                        <button class="profile-btn gemini" onclick="changeProfile('Gemini')">Gemini</button>
+                        <button class="profile-btn gpt" onclick="changeProfile('GPT')">GPT</button>
+                        <button class="profile-btn qwen" onclick="changeProfile('Qwen')">Qwen</button>
+                    </div>
                 </div>
-                <div class="profile-selector">
-                    <button class="profile-btn claude" onclick="changeProfile('Claude')">Claude</button>
-                    <button class="profile-btn gemini" onclick="changeProfile('Gemini')">Gemini</button>
-                    <button class="profile-btn gpt" onclick="changeProfile('GPT')">GPT</button>
-                    <button class="profile-btn qwen" onclick="changeProfile('Qwen')">Qwen</button>
-                </div>
-                
-                <div class="controls">
-                    <div class="live-indicator" id="status-indicator">LIVE</div>
-                    <button class="control-btn start" onclick="startBot()">▶ Start Bot</button>
-                    <button class="control-btn stop" onclick="stopBot()">⏹ Stop Bot</button>
-                    <button class="control-btn" onclick="forceUpdate()">🔄 Update</button>
+                <div class="header-right">
+                    <div class="api-status" id="api-status">
+                        <div class="status-indicator" id="status-indicator-api">🔴</div>
+                        <span id="status-text">Sprawdzanie API...</span>
+                    </div>
+                    <div class="controls">
+                        <div class="live-indicator" id="status-indicator">LIVE</div>
+                        <button class="control-btn start" onclick="startBot()">▶ Start Bot</button>
+                        <button class="control-btn stop" onclick="stopBot()">⏹ Stop Bot</button>
+                        <button class="control-btn" onclick="forceUpdate()">🔄 Update</button>
+                    </div>
                 </div>
             </div>
         </header>
@@ -798,6 +871,17 @@
                         <div class="stat-item">
                             <div class="stat-label">Active LLM</div>
                             <div class="stat-value" id="active-llm">Claude</div>
+                        </div>
+                    </div>
+                    <!-- New Won Trades Section -->
+                    <div class="won-trades-grid">
+                        <div class="won-trade-item">
+                            <div class="won-trade-label">Won Long Trades</div>
+                            <div class="won-trade-value" id="won-long-trades">0</div>
+                        </div>
+                        <div class="won-trade-item">
+                            <div class="won-trade-label">Won Short Trades</div>
+                            <div class="won-trade-value" id="won-short-trades">0</div>
                         </div>
                     </div>
                 </div>
@@ -1092,7 +1176,8 @@
             'ETHUSDT': 0,
             'SOLUSDT': 0,
             'BNBUSDT': 0,
-            'XRPUSDT': 0
+            'XRPUSDT': 0,
+            'DOGEUSDT': 0
         };
         
         // Funkcje dla każdej kryptowaluty
@@ -1239,7 +1324,7 @@
         
         // Helper function do formatowania ceny
         function formatPrice(symbol, price) {
-            if (symbol === 'XRPUSDT') {
+            if (symbol === 'XRPUSDT' || symbol === 'DOGEUSDT') {
                 return `$${price.toFixed(4)}`;
             } else if (price < 10) {
                 return `$${price.toFixed(3)}`;
@@ -1494,10 +1579,14 @@
             // Performance Metrics
             if (data.performance_metrics) {
                 const totalValue = data.account_summary?.total_value || initialCapital;
-                const totalProfit = ((totalValue - initialCapital) / initialCapital) * 100;
+                const netRealized = data.account_summary?.net_realized || 0;
+                
+                // Poprawne obliczenie Total Return %
+                const totalReturnPercent = netRealized !== 0 ? (netRealized / (totalValue - netRealized)) * 100 : 0;
+                
                 const totalProfitElem = document.getElementById('total-profit');
-                totalProfitElem.textContent = totalProfit.toFixed(2) + '%';
-                totalProfitElem.className = totalProfit >= 0 ? 'metric-value profit' : 'metric-value loss';
+                totalProfitElem.textContent = totalReturnPercent.toFixed(2) + '%';
+                totalProfitElem.className = totalReturnPercent >= 0 ? 'metric-value profit' : 'metric-value loss';
                 
                 document.getElementById('win-rate').textContent = (data.performance_metrics.win_rate || 0) + '%';
                 document.getElementById('total-trades').textContent = data.performance_metrics.total_trades || 0;
@@ -1505,6 +1594,10 @@
                 document.getElementById('long-trades').textContent = data.performance_metrics.long_trades || 0;
                 document.getElementById('short-trades').textContent = data.performance_metrics.short_trades || 0;
                 document.getElementById('avg-hold-time').textContent = (data.performance_metrics.avg_holding_hours || 0).toFixed(1) + 'h';
+                
+                // Nowe statystyki won trades
+                document.getElementById('won-long-trades').textContent = data.performance_metrics.won_long_trades || 0;
+                document.getElementById('won-short-trades').textContent = data.performance_metrics.won_short_trades || 0;
             }
 
             // Active LLM Profile
@@ -1616,52 +1709,52 @@
 
         // Kontrola bota
         async function startBot() {
-    try {
-        const response = await fetch('/api/start-bot', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({})  // Wyślij pusty obiekt
-        });
-        
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`HTTP ${response.status}: ${errorText}`);
+            try {
+                const response = await fetch('/api/start-bot', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({})  // Wyślij pusty obiekt
+                });
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText}`);
+                }
+                
+                const data = await response.json();
+                alert(data.status || data.message);
+                checkBotStatus();
+            } catch (error) {
+                console.error('Error starting bot:', error);
+                alert('Error starting bot: ' + error.message);
+            }
         }
-        
-        const data = await response.json();
-        alert(data.status || data.message);
-        checkBotStatus();
-    } catch (error) {
-        console.error('Error starting bot:', error);
-        alert('Error starting bot: ' + error.message);
-    }
-}
 
-async function stopBot() {
-    try {
-        const response = await fetch('/api/stop-bot', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({})  // Wyślij pusty obiekt
-        });
-        
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`HTTP ${response.status}: ${errorText}`);
+        async function stopBot() {
+            try {
+                const response = await fetch('/api/stop-bot', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({})  // Wyślij pusty obiekt
+                });
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText}`);
+                }
+                
+                const data = await response.json();
+                alert(data.status || data.message);
+                checkBotStatus();
+            } catch (error) {
+                console.error('Error stopping bot:', error);
+                alert('Error stopping bot: ' + error.message);
+            }
         }
-        
-        const data = await response.json();
-        alert(data.status || data.message);
-        checkBotStatus();
-    } catch (error) {
-        console.error('Error stopping bot:', error);
-        alert('Error stopping bot: ' + error.message);
-    }
-}
 
         async function changeProfile(profileName) {
             try {
@@ -1692,7 +1785,7 @@ async function stopBot() {
             }
         }
 
-        // Dodaj tę funkcję w sekcji <script>
+        // Funkcja do sprawdzania statusu API
         async function checkApiStatus() {
             try {
                 const response = await fetch('/api/api-status');
