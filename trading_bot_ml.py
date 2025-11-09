@@ -142,17 +142,22 @@ class LLMTradingBot:
         self.logger.info(f"📈 Trading assets: {', '.join(self.assets)}")
         self.logger.info(f"🔗 Real Trading: {self.real_trading}")
 
-    def generate_bybit_signature(self, params: Dict, timestamp: str) -> str:
-        """Generuje signature dla Bybit API v5 - POPRAWIONA WERSJA"""
+    def generate_bybit_signature(self, params: Dict, timestamp: str, method: str = "GET") -> str:
+        """Generuje signature dla Bybit API v5 - POPRAWIONA"""
         try:
             recv_window = "5000"
             
-            # Dla POST requests, parametry są w JSON body
-            if params:
-                # Konwertuj parametry do stringa JSON
+            if method.upper() == "GET" and params:
+                # Dla GET: parametry w query string
+                sorted_params = sorted(params.items())
+                param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
+                signature_payload = timestamp + self.api_key + recv_window + param_str
+            elif method.upper() == "POST" and params:
+                # Dla POST: parametry w JSON body
                 param_str = json.dumps(params, separators=(',', ':'))
                 signature_payload = timestamp + self.api_key + recv_window + param_str
             else:
+                # Bez parametrów
                 signature_payload = timestamp + self.api_key + recv_window
             
             self.logger.info(f"🔐 Signature payload: {signature_payload}")
@@ -181,7 +186,12 @@ class LLMTradingBot:
         
         if private:
             timestamp = str(int(time.time() * 1000))
-            signature = self.generate_bybit_signature(params, timestamp)
+            signature = self.generate_bybit_signature(params, timestamp, method)
+            
+            if not signature:
+                self.logger.error("❌ Failed to generate signature")
+                return None
+                
             headers = {
                 'X-BAPI-API-KEY': self.api_key,
                 'X-BAPI-SIGN': signature,
@@ -196,13 +206,16 @@ class LLMTradingBot:
             if method.upper() == 'GET':
                 response = requests.get(url, params=params, headers=headers, timeout=10)
             elif method.upper() == 'POST':
-                # Dla POST, parametry są w body, nie w query string
                 response = requests.post(url, json=params, headers=headers, timeout=10)
             else:
                 self.logger.error(f"❌ Nieobsługiwana metoda HTTP: {method}")
                 return None
             
             self.logger.info(f"📨 Response status: {response.status_code}")
+            
+            # Log pełnej odpowiedzi dla debugowania
+            response_text = response.text
+            self.logger.info(f"📄 Response: {response_text}")
             
             response.raise_for_status()
             data = response.json()
@@ -299,20 +312,18 @@ class LLMTradingBot:
         except Exception as e:
             self.logger.error(f"❌ Error getting Bybit price for {symbol}: {e}")
             return None
-
+    
     def get_account_balance(self) -> Optional[float]:
         """Pobiera rzeczywiste saldo konta z Bybit"""
         if not self.real_trading:
-            # Tryb wirtualny - zwróć saldo wirtualne
             return self.virtual_balance
-            
+                
         try:
             endpoint = "/v5/account/wallet-balance"
             params = {'accountType': 'UNIFIED'}
             
             data = self.bybit_request('GET', endpoint, params, private=True)
             if data and 'list' in data and len(data['list']) > 0:
-                # Pobierz całkowite saldo
                 total_equity = float(data['list'][0]['totalEquity'])
                 
                 self.logger.info(f"💰 Rzeczywiste saldo konta z Bybit: ${total_equity:.2f}")
@@ -320,7 +331,7 @@ class LLMTradingBot:
             else:
                 self.logger.warning("⚠️ Nie udało się pobrać salda konta z Bybit")
                 return None
-                
+                    
         except Exception as e:
             self.logger.error(f"❌ Error getting account balance from Bybit: {e}")
             return None
