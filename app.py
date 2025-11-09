@@ -149,6 +149,19 @@ def api_status():
             'message': f'Error: {str(e)}'
         })
 
+@app.route('/api/save-chart-data', methods=['POST'])
+def save_chart_data():
+    """Zapisuje dane wykresu"""
+    try:
+        data = request.get_json()
+        if llm_trading_bot and hasattr(llm_trading_bot, 'save_chart_data'):
+            if llm_trading_bot.save_chart_data(data):
+                return jsonify({'status': 'success'})
+        
+        return jsonify({'error': 'Failed to save chart data'}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 def run_bot():
     """Run the trading bot in a separate thread"""
     global llm_trading_bot  # Zmieniam na llm_trading_bot
