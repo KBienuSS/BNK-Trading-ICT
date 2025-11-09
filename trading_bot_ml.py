@@ -344,8 +344,51 @@ class LLMTradingBot:
             return None
 
     def get_current_price(self, symbol: str) -> Optional[float]:
-        """Pobiera aktualną cenę - WYŁĄCZNIE Z BYBIT API"""
-        return self.get_bybit_price(symbol)
+        """Pobiera aktualną cenę z Bybit API - TYLKO FUTURES"""
+        try:
+            endpoint = "/v5/market/tickers"
+            
+            # TYLKO futures linear
+            params = {
+                'category': 'linear',
+                'symbol': symbol
+            }
+            
+            self.logger.info(f"🔍 Fetching futures price for {symbol}")
+            
+            data = self.bybit_request('GET', endpoint, params)
+            
+            if data is not None and 'list' in data and len(data['list']) > 0:
+                price_str = data['list'][0].get('lastPrice')
+                if price_str:
+                    price = float(price_str)
+                    self.logger.info(f"✅ Futures price for {symbol}: ${price}")
+                    return price
+                else:
+                    self.logger.error(f"❌ No lastPrice in response for {symbol}")
+            else:
+                self.logger.warning(f"⚠️ No futures data found for {symbol}")
+                
+            # Fallback: spróbuj pobrać wszystkie tickery i znaleźć symbol
+            self.logger.info(f"🔍 Trying to fetch all futures tickers")
+            params_all = {'category': 'linear'}
+            all_data = self.bybit_request('GET', endpoint, params_all)
+            
+            if all_data and 'list' in all_data:
+                for ticker in all_data['list']:
+                    if ticker.get('symbol') == symbol:
+                        price_str = ticker.get('lastPrice')
+                        if price_str:
+                            price = float(price_str)
+                            self.logger.info(f"✅ Found futures price via all tickers: ${price}")
+                            return price
+            
+            self.logger.error(f"❌ Could not get futures price for {symbol}")
+            return None
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error getting futures price for {symbol}: {e}")
+            return None
 
     def analyze_simple_momentum(self, symbol: str) -> float:
         """Analiza momentum na podstawie rzeczywistych danych z Bybit API"""
@@ -494,32 +537,33 @@ class LLMTradingBot:
         return quantity, position_value, margin_required
 
     def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
-        """Składa rzeczywiste zlecenie na Bybit - POPRAWIONA"""
+        """Składa rzeczywiste zlecenie na Bybit - TYLKO FUTURES"""
         
-        self.logger.info(f"📦 PLACE_BYBIT_ORDER: {symbol} {side} Qty: {quantity:.6f}")
+        self.logger.info(f"📦 PLACE_BYBIT_ORDER FUTURES: {symbol} {side} Qty: {quantity:.6f}")
         
         if not self.real_trading:
-            self.logger.info(f"🔄 Tryb wirtualny - symulacja zlecenia {side} dla {symbol}")
+            self.logger.info(f"🔄 Tryb wirtualny - symulacja zlecenia futures {side} dla {symbol}")
             return f"virtual_order_{int(time.time())}"
             
         try:
             endpoint = "/v5/order/create"
             
-            # Formatowanie quantity
+            # Formatowanie quantity dla futures
             quantity_str = self.format_quantity(symbol, quantity)
             
+            # TYLKO futures linear
             params = {
-                'category': 'linear',
+                'category': 'linear',  # TYLKO LINEAR DLA FUTURES
                 'symbol': symbol,
                 'side': 'Buy' if side == 'LONG' else 'Sell',
                 'orderType': 'Market',
                 'qty': quantity_str,
                 'timeInForce': 'GTC',
                 'leverage': str(self.leverage),
-                'settleCoin': 'USDT'  # DODAJ TEN PARAMETR - WAŻNE!
+                'settleCoin': 'USDT'
             }
             
-            self.logger.info(f"🌐 Bybit order params: {params}")
+            self.logger.info(f"🌐 Futures order params: {params}")
             
             # Upewnij się, że wszystkie wartości są stringami
             params = {k: str(v) for k, v in params.items()}
@@ -527,14 +571,14 @@ class LLMTradingBot:
             data = self.bybit_request('POST', endpoint, params, private=True)
             
             if data and 'orderId' in data:
-                self.logger.info(f"✅ Zlecenie złożone na Bybit: {symbol} {side} - ID: {data['orderId']}")
+                self.logger.info(f"✅ Futures zlecenie złożone na Bybit: {symbol} {side} - ID: {data['orderId']}")
                 return data['orderId']
             else:
-                self.logger.error(f"❌ Błąd składania zlecenia na Bybit dla {symbol}")
+                self.logger.error(f"❌ Błąd składania zlecenia futures na Bybit dla {symbol}")
                 return None
                 
         except Exception as e:
-            self.logger.error(f"❌ Error placing Bybit order: {e}")
+            self.logger.error(f"❌ Error placing futures Bybit order: {e}")
             return None
 
     def format_quantity(self, symbol: str, quantity: float) -> str:
@@ -658,6 +702,25 @@ class LLMTradingBot:
             
         except Exception as e:
             self.logger.error(f"❌ Error syncing with Bybit: {e}")
+
+    def get_available_futures_symbols(self):
+        """Pobiera listę dostępnych futures symboli"""
+        try:
+            endpoint = "/v5/market/tickers"
+            params = {'category': 'linear'}
+            
+            data = self.bybit_request('GET', endpoint, params)
+            if data and 'list' in data:
+                symbols = [ticker['symbol'] for ticker in data['list']]
+                self.logger.info(f"📊 Available futures symbols: {len(symbols)}")
+                # Pokaż tylko nasze aktywa
+                our_symbols = [s for s in symbols if s in self.assets]
+                self.logger.info(f"📈 Our trading symbols: {our_symbols}")
+                return symbols
+            return []
+        except Exception as e:
+            self.logger.error(f"❌ Error getting futures symbols: {e}")
+            return []
 
     def calculate_llm_exit_plan(self, entry_price: float, confidence: float, side: str) -> Dict:
         """Oblicza plan wyjścia w stylu LLM"""
@@ -1054,6 +1117,25 @@ class LLMTradingBot:
             self.logger.info(f"🔄 Changed LLM profile to: {profile_name}")
             return True
         return False
+
+    def debug_futures_setup(self):
+        """Debuguje konfigurację futures"""
+        self.logger.info("🔧 DEBUG FUTURES SETUP")
+        
+        # Sprawdź dostępne symbole
+        available_symbols = self.get_available_futures_symbols()
+        
+        # Sprawdź ceny dla naszych symboli
+        for symbol in self.assets:
+            price = self.get_current_price(symbol)
+            if price:
+                self.logger.info(f"✅ {symbol}: ${price}")
+            else:
+                self.logger.error(f"❌ {symbol}: NO PRICE")
+        
+        # Sprawdź API status
+        api_status = self.check_api_status()
+        self.logger.info(f"🔗 API Status: {api_status}")
 
     def get_dashboard_data(self):
         """Przygotowuje dane dla dashboardu używając rzeczywistych cen z Bybit API"""
