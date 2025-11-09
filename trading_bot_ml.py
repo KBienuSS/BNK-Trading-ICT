@@ -188,20 +188,19 @@ class LLMTradingBot:
         self.logger.info(f"📊 Available categories: {available_categories}")
         return available_categories
 
-    def generate_bybit_signature(self, params: Dict, timestamp: str, method: str = "GET") -> str:
-        """Generuje signature dla Bybit API v5 - POPRAWIONA"""
+    def generate_bybit_signature(self, params: Dict, timestamp: str, recv_window: str = "5000") -> str:
+        """Generuje signature dla Bybit API v5 - POPRAWIONA WERSJA"""
         try:
-            recv_window = "5000"
+            # Dla POST requestów, parametry są w body, więc nie wchodzą do signature payload
+            signature_payload = timestamp + self.api_key + recv_window
             
-            # Dla obu metod używamy query string format w signature
+            # TYLKO dla GET requestów dodajemy parametry do signature
             if params:
                 # Konwertuj wszystkie wartości do string i posortuj
                 string_params = {str(k): str(v) for k, v in params.items()}
                 sorted_params = sorted(string_params.items())
                 param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
-                signature_payload = timestamp + self.api_key + recv_window + param_str
-            else:
-                signature_payload = timestamp + self.api_key + recv_window
+                signature_payload += param_str
             
             self.logger.info(f"🔐 Signature payload: {signature_payload}")
             
@@ -220,7 +219,6 @@ class LLMTradingBot:
     
     def bybit_request(self, method: str, endpoint: str, params: Dict = None, private: bool = False) -> Optional[Dict]:
         """Wykonuje request do Bybit API - POPRAWIONE PODPISYWANIE"""
-        
         url = f"{self.base_url}{endpoint}"
         headers = {}
         
@@ -229,16 +227,15 @@ class LLMTradingBot:
                 timestamp = str(int(time.time() * 1000))
                 recv_window = "5000"
                 
-                # POPRAWIONE: Używaj parametrów w query string dla GET, w body dla POST
+                # POPRAWIONE: Dla POST - signature BEZ parametrów (są w body)
+                # Dla GET - signature Z parametrami (są w URL)
                 if method.upper() == 'GET' and params:
-                    # Dla GET: parametry w URL, signature z parametrami
                     signature_payload = timestamp + self.api_key + recv_window
-                    if params:
-                        sorted_params = sorted(params.items())
-                        param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
-                        signature_payload += param_str
+                    sorted_params = sorted(params.items())
+                    param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
+                    signature_payload += param_str
                 else:
-                    # Dla POST: signature bez parametrów (są w body)
+                    # Dla POST: signature bez parametrów
                     signature_payload = timestamp + self.api_key + recv_window
                 
                 signature = hmac.new(
@@ -256,6 +253,8 @@ class LLMTradingBot:
                 }
     
             # Wykonaj request
+            self.logger.info(f"🌐 Making {method} request to: {url}")
+            
             if method.upper() == 'GET':
                 response = requests.get(url, params=params, headers=headers, timeout=10)
             elif method.upper() == 'POST':
@@ -264,11 +263,15 @@ class LLMTradingBot:
                 return None
             
             # Sprawdź odpowiedź
+            self.logger.info(f"📨 Response status: {response.status_code}")
+            
             if response.status_code != 200:
                 self.logger.error(f"❌ HTTP Error: {response.status_code}")
+                self.logger.error(f"❌ Response text: {response.text}")
                 return None
                 
             response_data = response.json()
+            self.logger.info(f"📄 API Response: {response_data}")
             
             if response_data.get('retCode') != 0:
                 error_msg = response_data.get('retMsg', 'Unknown error')
@@ -279,6 +282,8 @@ class LLMTradingBot:
             
         except Exception as e:
             self.logger.error(f"❌ Request error: {e}")
+            import traceback
+            self.logger.error(f"❌ Stack trace: {traceback.format_exc()}")
             return None
             
     def check_api_status(self) -> Dict:
@@ -455,9 +460,9 @@ class LLMTradingBot:
 # trading_bot_ml.py (fragment z poprawioną funkcją place_bybit_order)
 
     def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
-        """Składa zlecenie futures na Bybit - POPRAWIONA WERSJA"""
+        """Składa zlecenie futures na Bybit - UPROSZCZONA WERSJA"""
         
-        self.logger.info(f"🚀 PLACE_BYBIT_ORDER: {symbol} {side} Qty: {quantity:.6f} Price: ${price}")
+        self.logger.info(f"🚀 PLACE_BYBIT_ORDER: {symbol} {side} Qty: {quantity:.6f}")
         
         if not self.real_trading:
             order_id = f"virtual_{int(time.time())}"
@@ -465,15 +470,11 @@ class LLMTradingBot:
             return order_id
             
         try:
-            # 1. Ustaw dźwignię PRZED złożeniem zlecenia
+            # 1. Ustaw dźwignię
             self.logger.info(f"🎚️ Setting leverage {self.leverage}x for {symbol}")
-            leverage_set = self.set_leverage(symbol, self.leverage)
-            
-            if not leverage_set:
-                self.logger.error(f"❌ Failed to set leverage for {symbol}")
-                return None
+            self.set_leverage(symbol, self.leverage)
     
-            # 2. Przygotuj parametry zlecenia
+            # 2. Przygotuj parametry
             endpoint = "/v5/order/create"
             quantity_str = self.format_quantity(symbol, quantity)
             
@@ -481,7 +482,7 @@ class LLMTradingBot:
                 'category': 'linear',
                 'symbol': symbol,
                 'side': 'Buy' if side == 'LONG' else 'Sell',
-                'orderType': 'Market',  # Zlecenie rynkowe - najprostsze
+                'orderType': 'Market',
                 'qty': quantity_str,
                 'timeInForce': 'GTC',
                 'leverage': str(self.leverage)
@@ -498,8 +499,6 @@ class LLMTradingBot:
                 return order_id
             else:
                 self.logger.error(f"❌ ORDER FAILED: No orderId in response")
-                if data:
-                    self.logger.error(f"❌ Response: {data}")
                 return None
                 
         except Exception as e:
