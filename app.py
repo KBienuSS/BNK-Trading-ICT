@@ -23,6 +23,12 @@ trading_bot = None
 llm_trading_bot = None  # Zmieniam nazwę na llm_trading_bot
 bot_status = "stopped"
 
+try:
+    llm_trading_bot = LLMTradingBot()
+    print("✅ Bot initialized on app startup")
+except Exception as e:
+    print(f"❌ Bot initialization failed: {e}")
+    
 class TradingData:
     def __init__(self):
         self.account_value = 50000
@@ -114,7 +120,7 @@ def test_order():
     test_price = 104000.0
     test_side = "LONG"
     
-    bot.logger.info("🧪 TEST ORDER - Starting direct API test")
+    llm_trading_bot.logger.info("🧪 TEST ORDER - Starting direct API test")
     
     # 1. Test pobierania ceny
     price = bot.get_current_price(symbol)
