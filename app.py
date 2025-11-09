@@ -225,15 +225,18 @@ def debug_position_size(symbol):
 def force_open_position(symbol):
     """Wymusza otwarcie pozycji dla testów"""
     if not llm_trading_bot:
+        app.logger.error(f"❌ Bot not initialized for symbol {symbol}")
         return jsonify({'error': 'Bot not initialized'})
     
     try:
-        # Dodaj debug log
-        llm_trading_bot.logger.info(f"🎯🔄 MANUAL FORCE OPEN POSITION for {symbol}")
+        # DODAJ LOGI DIAGNOSTYCZNE
+        app.logger.info(f"🎯 MANUAL FORCE OPEN POSITION REQUEST for {symbol}")
+        app.logger.info(f"🔧 Real Trading: {llm_trading_bot.real_trading}")
+        app.logger.info(f"🔧 Bot Running: {llm_trading_bot.is_running}")
         
         # Pobierz aktualną cenę
         current_price = llm_trading_bot.get_current_price(symbol)
-        llm_trading_bot.logger.info(f"💰 Current price for {symbol}: ${current_price}")
+        app.logger.info(f"💰 Current price for {symbol}: ${current_price}")
         
         if not current_price:
             return jsonify({
@@ -241,15 +244,9 @@ def force_open_position(symbol):
                 'message': f'Could not get price for {symbol}'
             })
         
-        # Wymuś sygnał LONG z wysokim confidence
-        signal = "LONG"
-        confidence = 0.95
-        
-        llm_trading_bot.logger.info(f"🎯 Forced signal: {signal}, Confidence: {confidence}")
-        
         # Sprawdź aktywne pozycje
         active_positions = sum(1 for p in llm_trading_bot.positions.values() if p['status'] == 'ACTIVE')
-        llm_trading_bot.logger.info(f"📊 Active positions: {active_positions}/{llm_trading_bot.max_simultaneous_positions}")
+        app.logger.info(f"📊 Active positions: {active_positions}/{llm_trading_bot.max_simultaneous_positions}")
         
         if active_positions >= llm_trading_bot.max_simultaneous_positions:
             return jsonify({
@@ -257,41 +254,11 @@ def force_open_position(symbol):
                 'message': f'Max positions reached: {active_positions}/{llm_trading_bot.max_simultaneous_positions}'
             })
         
-        # Oblicz wielkość pozycji
-        quantity, position_value, margin_required = llm_trading_bot.calculate_position_size(
-            symbol, current_price, confidence
-        )
-        
-        llm_trading_bot.logger.info(f"📦 Position calc - Qty: {quantity}, Value: ${position_value:.2f}, Margin: ${margin_required:.2f}")
-        
-        # Sprawdź saldo
-        api_status = llm_trading_bot.check_api_status()
-        available_balance = api_status['balance'] if api_status['balance_available'] else llm_trading_bot.virtual_balance
-        
-        llm_trading_bot.logger.info(f"💵 Available balance: ${available_balance:.2f}")
-        
-        if margin_required > available_balance:
-            llm_trading_bot.logger.warning(f"❌ Insufficient balance. Required: ${margin_required:.2f}, Available: ${available_balance:.2f}")
-            return jsonify({
-                'status': 'failed',
-                'message': f'Insufficient balance. Required: ${margin_required:.2f}, Available: ${available_balance:.2f}'
-            })
-        
-        # Sprawdź minimalną wielkość zlecenia
-        min_order_value = quantity * current_price
-        llm_trading_bot.logger.info(f"📏 Order value: ${min_order_value:.2f}")
-        
-        if min_order_value < 5:  # Minimalne $5 dla Bybit
-            llm_trading_bot.logger.warning(f"❌ Order value too small: ${min_order_value:.2f}")
-            return jsonify({
-                'status': 'failed',
-                'message': f'Order value too small: ${min_order_value:.2f} < $5'
-            })
-        
-        llm_trading_bot.logger.info(f"✅ ALL CHECKS PASSED - OPENING POSITION")
-        
-        # Wywołaj oryginalną funkcję
+        # Wywołaj funkcję bota
+        app.logger.info(f"🚀 Calling llm_trading_bot.open_llm_position('{symbol}')")
         position_id = llm_trading_bot.open_llm_position(symbol)
+        
+        app.logger.info(f"📨 Result from open_llm_position: {position_id}")
         
         if position_id:
             return jsonify({
@@ -306,7 +273,9 @@ def force_open_position(symbol):
             })
             
     except Exception as e:
-        llm_trading_bot.logger.error(f"💥 Error in force-open-position: {e}")
+        app.logger.error(f"💥 Error in force-open-position: {e}")
+        import traceback
+        app.logger.error(f"💥 Stack trace: {traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
         
 def run_bot():
