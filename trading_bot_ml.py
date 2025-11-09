@@ -142,6 +142,31 @@ class LLMTradingBot:
         self.logger.info(f"📈 Trading assets: {', '.join(self.assets)}")
         self.logger.info(f"🔗 Real Trading: {self.real_trading}")
 
+        def set_leverage(self, symbol: str, leverage: int, category: str = 'linear') -> bool:
+            """Ustawia dźwignię dla symbolu"""
+            if not self.real_trading:
+                return True
+                
+            try:
+                endpoint = "/v5/position/set-leverage"
+                params = {
+                    'category': category,
+                    'symbol': symbol,
+                    'buyLeverage': str(leverage),
+                    'sellLeverage': str(leverage)
+                }
+                
+                data = self.bybit_request('POST', endpoint, params, private=True)
+                if data:
+                    self.logger.info(f"✅ Ustawiono dźwignię {leverage}x dla {symbol}")
+                    return True
+                else:
+                    self.logger.error(f"❌ Błąd ustawiania dźwigni dla {symbol}")
+                    return False
+            except Exception as e:
+                self.logger.error(f"❌ Error setting leverage for {symbol}: {e}")
+                return False
+            
     def check_available_categories(self):
         """Sprawdza dostępne kategorie dla konta"""
         self.logger.info("🔍 Checking available categories...")
@@ -231,19 +256,19 @@ class LLMTradingBot:
         try:
             self.logger.info(f"🌐 Bybit Request: {method} {url}")
             self.logger.info(f"📦 Request params: {params}")
-            
+            self.logger.info(f"🔐 Headers: {headers}")
+
             if method.upper() == 'GET':
-                response = requests.get(url, params=request_params, headers=headers, timeout=10)
+                response = requests.get(url, params=params, headers=headers, timeout=10)
             elif method.upper() == 'POST':
-                # Dla POST: parametry w JSON body
-                response = requests.post(url, json=json_data, headers=headers, timeout=10)
+                response = requests.post(url, json=params, headers=headers, timeout=10)
             else:
                 self.logger.error(f"❌ Nieobsługiwana metoda HTTP: {method}")
                 return None
-            
+
             self.logger.info(f"📨 Response status: {response.status_code}")
             response_text = response.text
-            self.logger.info(f"📄 Response: {response_text}")
+            self.logger.info(f"📄 Response text: {response_text}")
             
             response.raise_for_status()
             data = response.json()
@@ -939,7 +964,11 @@ class LLMTradingBot:
                 return None
             
             self.logger.info(f"✅ ALL CHECKS PASSED - ATTEMPTING TO OPEN POSITION")
-            
+
+            if not self.set_leverage(symbol, self.leverage):
+                self.logger.error(f"❌ Nie udało się ustawić dźwigni dla {symbol}")
+                return None
+                            
             # 7. SKŁADANIE ZLECENIA NA BYBIT
             self.logger.info(f"🚀 Calling place_bybit_order for {symbol}")
             order_id = self.place_bybit_order(symbol, signal, quantity, current_price)
