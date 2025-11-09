@@ -215,6 +215,48 @@ def save_chart_data():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# W pliku z Flask routes dodaj:
+@app.route('/api/check-permissions', methods=['GET'])
+def check_permissions():
+    """Sprawdza uprawnienia API"""
+    try:
+        # Sprawdź czy bot jest zdefiniowany
+        if 'bot' not in globals():
+            return jsonify({
+                "status": "error", 
+                "message": "Bot not initialized"
+            }), 500
+            
+        api_status = bot.check_api_status()
+        
+        # Test zlecenia z minimalną kwotą
+        test_symbol = "BTCUSDT"
+        test_price = bot.get_current_price(test_symbol)
+        
+        if test_price:
+            # Sprawdź czy możemy ustawić dźwignię
+            leverage_set = bot.set_leverage(test_symbol, bot.leverage)
+            
+            return jsonify({
+                "status": "success",
+                "api_status": api_status,
+                "price_check": f"✅ ${test_price}",
+                "leverage_set": leverage_set,
+                "real_trading": bot.real_trading,
+                "message": f"API Status: {api_status['message']}"
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Cannot fetch price data"
+            }), 500
+            
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Error checking permissions: {str(e)}"
+        }), 500
+        
 @app.route('/api/debug-conditions')
 def debug_conditions():
     """Debuguje warunki wejścia"""
