@@ -216,8 +216,8 @@ class LLMTradingBot:
             if method.upper() == 'GET':
                 response = requests.get(url, params=params, headers=headers, timeout=10)
             elif method.upper() == 'POST':
-                # Dla POST wysyłamy params jako JSON
-                response = requests.post(url, json=params, headers=headers, timeout=10)
+                # DLA POST: Wyślij puste body, a parametry w query string
+                response = requests.post(url, params=params, headers=headers, timeout=10)
             else:
                 self.logger.error(f"❌ Nieobsługiwana metoda HTTP: {method}")
                 return None
@@ -241,7 +241,6 @@ class LLMTradingBot:
         except Exception as e:
             self.logger.error(f"❌ Unexpected error in Bybit request: {e}")
             return None
-
     def check_api_status(self) -> Dict:
         """Sprawdza status połączenia z Bybit API"""
         status = {
@@ -498,7 +497,7 @@ class LLMTradingBot:
     def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
         """Składa rzeczywiste zlecenie na Bybit - POPRAWIONA WERSJA"""
         
-        self.logger.info(f"📦 PLACE_BYBIT_ORDER: {symbol} {side} Qty: {quantity:.6f} Price: ${price}")
+        self.logger.info(f"📦 PLACE_BYBIT_ORDER: {symbol} {side} Qty: {quantity:.6f}")
         
         if not self.real_trading:
             self.logger.info(f"🔄 Tryb wirtualny - symulacja zlecenia {side} dla {symbol}")
@@ -507,8 +506,7 @@ class LLMTradingBot:
         try:
             endpoint = "/v5/order/create"
             
-            # Formatowanie quantity zgodnie z wymaganiami Bybit
-            # Dla BTCUSDT: 0.001, dla ETHUSDT: 0.01, itd.
+            # Formatowanie quantity
             quantity_str = self.format_quantity(symbol, quantity)
             
             params = {
@@ -521,9 +519,7 @@ class LLMTradingBot:
                 'leverage': str(self.leverage)
             }
             
-            # Dla zleceń market nie podajemy ceny
-            # 'price': str(price)  # NIE UŻYWAJ DLA MARKET ORDERS
-            
+            # Dla market orders nie podajemy ceny
             self.logger.info(f"🌐 Bybit order params: {params}")
             
             data = self.bybit_request('POST', endpoint, params, private=True)
