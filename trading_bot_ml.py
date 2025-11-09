@@ -16,6 +16,7 @@ import hmac
 import hashlib
 import base64
 
+# Spróbuj zaimportować pybit
 try:
     from pybit.unified_trading import HTTP
     PYBIT_AVAILABLE = True
@@ -50,6 +51,23 @@ class LLMTradingBot:
         else:
             self.real_trading = True
             logging.info("🔑 Klucze API Bybit załadowane - REAL TRADING ENABLED")
+        
+        # Inicjalizacja sesji HTTP dla pybit
+        self.session = None
+        if self.real_trading and PYBIT_AVAILABLE:
+            try:
+                self.session = HTTP(
+                    testnet=self.testnet,
+                    api_key=self.api_key,
+                    api_secret=self.api_secret,
+                )
+                self.logger.info("✅ Sesja HTTP pybit zainicjalizowana")
+            except Exception as e:
+                self.logger.error(f"❌ Błąd inicjalizacji sesji pybit: {e}")
+                self.session = None
+        else:
+            if self.real_trading:
+                self.logger.warning("⚠️ Pybit nie jest dostępny, używane będą ręczne żądania API (mogą nie działać)")
         
         # Kapitał wirtualny (fallback)
         self.initial_capital = initial_capital
@@ -148,75 +166,16 @@ class LLMTradingBot:
         self.logger.info(f"🎯 Active LLM Profile: {self.active_profile}")
         self.logger.info(f"📈 Trading assets: {', '.join(self.assets)}")
         self.logger.info(f"🔗 Real Trading: {self.real_trading}")
-            # Inicjalizacja sesji HTTP dla pybit
-        self.session = None
-        if self.real_trading and PYBIT_AVAILABLE:
-            try:
-                self.session = HTTP(
-                    testnet=self.testnet,
-                    api_key=self.api_key,
-                    api_secret=self.api_secret,
-                )
-                self.logger.info("✅ Sesja HTTP pybit zainicjalizowana")
-            except Exception as e:
-                self.logger.error(f"❌ Błąd inicjalizacji sesji pybit: {e}")
-                self.session = None
 
-    def place_bybit_order_pybit(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
-        """Składa zlecenie używając oficjalnej biblioteki Bybit pybit"""
-        
-        self.logger.info(f"🚀 PYBIT ORDER: {symbol} {side} Qty: {quantity:.6f}")
-        
+    def set_leverage(self, symbol: str, leverage: int) -> bool:
+        """Ustawia dźwignię dla symbolu używając pybit"""
         if not self.real_trading:
-            order_id = f"virtual_{int(time.time())}"
-            self.logger.info(f"🔄 Virtual order: {order_id}")
-            return order_id
+            return True
             
         if not self.session:
             self.logger.error("❌ Brak sesji pybit")
-            return None
-            
-        try:
-            # 1. Najpierw ustaw dźwignię
-            leverage_success = self.set_leverage_pybit(symbol, self.leverage)
-            if not leverage_success:
-                self.logger.warning(f"⚠️ Ustawienie dźwigni mogło się nie powieść, kontynuuję...")
-            
-            # 2. Przygotuj parametry zlecenia
-            quantity_str = self.format_quantity(symbol, quantity)
-            
-            # 3. Złóż zlecenie
-            response = self.session.place_order(
-                category="linear",
-                symbol=symbol,
-                side="Buy" if side == "LONG" else "Sell",
-                orderType="Market",
-                qty=quantity_str,
-                timeInForce="GTC",
-            )
-            
-            self.logger.info(f"📨 Pybit response: {response}")
-            
-            if response['retCode'] == 0:
-                order_id = response['result']['orderId']
-                self.logger.info(f"✅ PYBIT ORDER SUCCESS: {symbol} {side} - ID: {order_id}")
-                return order_id
-            else:
-                error_msg = response.get('retMsg', 'Unknown error')
-                self.logger.error(f"❌ PYBIT ORDER FAILED: {error_msg}")
-                return None
-                
-        except Exception as e:
-            self.logger.error(f"💥 PYBIT CRITICAL ERROR: {e}")
-            import traceback
-            self.logger.error(f"💥 Stack trace: {traceback.format_exc()}")
-            return None
-            
-    def set_leverage_pybit(self, symbol: str, leverage: int) -> bool:
-        """Ustawia dźwignię używając pybit - POPRAWIONA"""
-        if not self.real_trading or not self.session:
-            return True
-            
+            return False
+
         try:
             response = self.session.set_leverage(
                 category="linear",
@@ -226,7 +185,7 @@ class LLMTradingBot:
             )
             
             if response['retCode'] == 0:
-                self.logger.info(f"✅ PYBIT Leverage set: {leverage}x dla {symbol}")
+                self.logger.info(f"✅ Ustawiono dźwignię {leverage}x dla {symbol}")
                 return True
             else:
                 # Błąd 110043 oznacza, że dźwignia jest już ustawiona - traktuj jako sukces
@@ -235,126 +194,51 @@ class LLMTradingBot:
                     return True
                 else:
                     error_msg = response.get('retMsg', 'Unknown error')
-                    self.logger.warning(f"⚠️ PYBIT Leverage setting warning: {error_msg}")
+                    self.logger.error(f"❌ Błąd ustawiania dźwigni dla {symbol}: {error_msg}")
                     return False
-                
+                    
         except Exception as e:
-            self.logger.error(f"❌ PYBIT Leverage error: {e}")
+            self.logger.error(f"❌ Error setting leverage for {symbol}: {e}")
             return False
 
-    def verify_position_opened(self, order_id: str, symbol: str) -> bool:
-        """Weryfikuje czy pozycja została otwarta"""
-        if not self.real_trading or not self.session:
-            return True
-            
-        try:
-            # Sprawdź zlecenie
-            order_response = self.session.get_order_history(
-                category="linear",
-                orderId=order_id
-            )
-            
-            if order_response['retCode'] == 0 and order_response['result']['list']:
-                order_status = order_response['result']['list'][0]['orderStatus']
-                self.logger.info(f"📊 Order status: {order_status}")
-                
-                # Sprawdź pozycję
-                position_response = self.session.get_positions(
-                    category="linear", 
-                    symbol=symbol
-                )
-                
-                if position_response['retCode'] == 0:
-                    positions = position_response['result']['list']
-                    active_positions = [p for p in positions if float(p['size']) > 0]
-                    self.logger.info(f"📊 Active positions for {symbol}: {len(active_positions)}")
-                    
-                    return len(active_positions) > 0
-            
-            return False
-            
-        except Exception as e:
-            self.logger.error(f"❌ Error verifying position: {e}")
-            return False
-            
-    def close_bybit_position_pybit(self, symbol: str, side: str, quantity: float) -> bool:
-        """Zamyka pozycję używając pybit"""
-        if not self.real_trading:
-            self.logger.info(f"🔄 Tryb wirtualny - symulacja zamknięcia pozycji {symbol}")
-            return True
-            
+    def check_available_categories(self):
+        """Sprawdza dostępne kategorie dla konta używając pybit"""
+        self.logger.info("🔍 Checking available categories...")
+        
         if not self.session:
             self.logger.error("❌ Brak sesji pybit")
-            return False
-    
-        try:
-            close_side = 'Sell' if side == 'LONG' else 'Buy'
-            quantity_str = self.format_quantity(symbol, quantity)
-            
-            response = self.session.place_order(
-                category="linear",
-                symbol=symbol,
-                side=close_side,
-                orderType="Market",
-                qty=quantity_str,
-                timeInForce="GTC",
-                reduceOnly=True,  # Ważne: tylko redukcja istniejącej pozycji
-            )
-            
-            if response['retCode'] == 0:
-                self.logger.info(f"✅ PYBIT Position closed: {symbol} - ID: {response['result']['orderId']}")
-                return True
-            else:
-                error_msg = response.get('retMsg', 'Unknown error')
-                self.logger.error(f"❌ PYBIT Close position failed: {error_msg}")
-                return False
-                
-        except Exception as e:
-            self.logger.error(f"❌ PYBIT Close position error: {e}")
-            return False
-
-    def get_bybit_positions_pybit(self) -> List[Dict]:
-        """Pobiera aktywne pozycje używając pybit"""
-        if not self.real_trading or not self.session:
             return []
-                
-        try:
-            response = self.session.get_positions(
-                category="linear",
-                symbol=""  # Pobierz wszystkie pozycje
-            )
             
-            if response['retCode'] == 0:
-                active_positions = []
-                for pos in response['result']['list']:
-                    if float(pos['size']) > 0:  # Tylko pozycje z wielkością > 0
-                        active_positions.append({
-                            'symbol': pos['symbol'],
-                            'side': 'LONG' if pos['side'] == 'Buy' else 'SHORT',
-                            'size': float(pos['size']),
-                            'entry_price': float(pos['avgPrice']),
-                            'leverage': float(pos['leverage']),
-                            'unrealised_pnl': float(pos['unrealisedPnl']),
-                            'liq_price': float(pos['liqPrice']) if pos['liqPrice'] else None
-                        })
-                return active_positions
-            else:
-                self.logger.error(f"❌ PYBIT Get positions failed: {response.get('retMsg', 'Unknown')}")
-                return []
+        categories_to_test = ['spot', 'linear', 'inverse', 'option']
+        available_categories = []
+        
+        for category in categories_to_test:
+            try:
+                response = self.session.get_tickers(
+                    category=category,
+                    symbol='BTCUSDT'  # Sprawdź dla konkretnego symbolu
+                )
                 
-        except Exception as e:
-            self.logger.error(f"❌ PYBIT Get positions error: {e}")
-            return []
+                if response['retCode'] == 0:
+                    available_categories.append(category)
+                    self.logger.info(f"✅ Category '{category}' is available")
+                else:
+                    self.logger.info(f"❌ Category '{category}' is NOT available")
+            except Exception as e:
+                self.logger.info(f"❌ Category '{category}' is NOT available: {e}")
+        
+        self.logger.info(f"📊 Available categories: {available_categories}")
+        return available_categories
 
-    def get_account_balance_pybit(self) -> Optional[float]:
-        """Pobiera saldo używając pybit"""
+    def get_account_balance(self) -> Optional[float]:
+        """Pobiera rzeczywiste saldo konta z Bybit używając pybit"""
         if not self.real_trading:
             return self.virtual_balance
             
         if not self.session:
             self.logger.error("❌ Brak sesji pybit")
             return None
-    
+
         try:
             response = self.session.get_wallet_balance(
                 accountType="UNIFIED"
@@ -362,270 +246,6 @@ class LLMTradingBot:
             
             if response['retCode'] == 0:
                 total_equity = float(response['result']['list'][0]['totalEquity'])
-                self.logger.info(f"💰 PYBIT Balance: ${total_equity:.2f}")
-                return total_equity
-            else:
-                self.logger.error(f"❌ PYBIT Balance error: {response.get('retMsg', 'Unknown')}")
-                return None
-                
-        except Exception as e:
-            self.logger.error(f"❌ PYBIT Balance exception: {e}")
-            return None
-
-    def set_leverage(self, symbol: str, leverage: int, category: str = 'linear') -> bool:
-        """Ustawia dźwignię dla symbolu"""
-        if not self.real_trading:
-            return True
-            
-        try:
-            endpoint = "/v5/position/set-leverage"
-            params = {
-                'category': category,
-                'symbol': symbol,
-                'buyLeverage': str(leverage),
-                'sellLeverage': str(leverage)
-            }
-            
-            data = self.bybit_request('POST', endpoint, params, private=True)
-            if data:
-                self.logger.info(f"✅ Ustawiono dźwignię {leverage}x dla {symbol}")
-                return True
-            else:
-                self.logger.error(f"❌ Błąd ustawiania dźwigni dla {symbol}")
-                return False
-        except Exception as e:
-            self.logger.error(f"❌ Error setting leverage for {symbol}: {e}")
-            return False
-            
-    def check_available_categories(self):
-        """Sprawdza dostępne kategorie dla konta"""
-        self.logger.info("🔍 Checking available categories...")
-        
-        categories_to_test = ['spot', 'linear', 'inverse', 'option']
-        available_categories = []
-        
-        for category in categories_to_test:
-            endpoint = "/v5/market/tickers"
-            params = {'category': category}
-            
-            data = self.bybit_request('GET', endpoint, params)
-            if data is not None:  # bybit_request zwraca None w przypadku błędu, a jak nie to result
-                available_categories.append(category)
-                self.logger.info(f"✅ Category '{category}' is available")
-            else:
-                self.logger.info(f"❌ Category '{category}' is NOT available")
-        
-        self.logger.info(f"📊 Available categories: {available_categories}")
-        return available_categories
-
-    def generate_bybit_signature(self, method: str, params: Dict, timestamp: str, recv_window: str = "5000") -> str:
-        """Generuje signature dla Bybit API v5 - POPRAWIONA WERSJA"""
-        try:
-            # Dla GET: parametry w query string
-            # Dla POST: parametry w JSON body
-            signature_payload = timestamp + self.api_key + recv_window
-            
-            if method.upper() == 'POST':
-                # DLA POST: parametry są w body jako JSON
-                import json
-                if params:
-                    # Używaj dokładnie tego samego JSON który będzie wysłany
-                    content = json.dumps(params, separators=(',', ':'))  # Bez spacji
-                    signature_payload += content
-            else:
-                # DLA GET: parametry w query string
-                if params:
-                    # Konwertuj wszystkie wartości do string
-                    string_params = {}
-                    for key, value in params.items():
-                        string_params[str(key)] = str(value)
-                    
-                    # Posortuj parametry alfabetycznie
-                    sorted_params = sorted(string_params.items())
-                    
-                    # Stwórz query string
-                    param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
-                    signature_payload += param_str
-            
-            self.logger.info(f"🔐 Signature payload: {signature_payload}")
-            self.logger.info(f"🔐 Payload length: {len(signature_payload)}")
-            
-            # Generuj signature
-            signature = hmac.new(
-                bytes(self.api_secret, "utf-8"),
-                signature_payload.encode("utf-8"),
-                hashlib.sha256
-            ).hexdigest()
-            
-            self.logger.info(f"✅ Generated signature: {signature}")
-            return signature
-            
-        except Exception as e:
-            self.logger.error(f"❌ Error generating signature: {e}")
-            import traceback
-            self.logger.error(f"❌ Stack trace: {traceback.format_exc()}")
-            return ""
-    
-    def bybit_request(self, method: str, endpoint: str, params: Dict = None, private: bool = False) -> Optional[Dict]:
-        """Wykonuje request do Bybit API - POPRAWIONA"""
-        url = f"{self.base_url}{endpoint}"
-        headers = {}
-        
-        try:
-            if private:
-                timestamp = str(int(time.time() * 1000))
-                recv_window = "5000"
-                
-                # Przekaż metodę do generowania signature
-                signature = self.generate_bybit_signature(method, params, timestamp, recv_window)
-                if not signature:
-                    return None
-                
-                headers = {
-                    'X-BAPI-API-KEY': self.api_key,
-                    'X-BAPI-SIGN': signature,
-                    'X-BAPI-TIMESTAMP': timestamp,
-                    'X-BAPI-RECV-WINDOW': recv_window,
-                    'Content-Type': 'application/json'
-                }
-    
-            # Wykonaj request
-            self.logger.info(f"🌐 Making {method} request to: {url}")
-            self.logger.info(f"📦 Request params: {params}")
-            
-            if method.upper() == 'GET':
-                response = requests.get(url, params=params, headers=headers, timeout=10)
-            elif method.upper() == 'POST':
-                # Dla POST: parametry w body JSON
-                response = requests.post(url, json=params, headers=headers, timeout=10)
-            else:
-                return None
-            
-            # ... reszta kodu pozostaje bez zmian
-            
-            self.logger.info(f"📨 Response status: {response.status_code}")
-            
-            if response.status_code != 200:
-                self.logger.error(f"❌ HTTP Error: {response.status_code}")
-                self.logger.error(f"❌ Response text: {response.text}")
-                return None
-                
-            response_data = response.json()
-            self.logger.info(f"📄 Full API response: {response_data}")
-            
-            if response_data.get('retCode') != 0:
-                error_msg = response_data.get('retMsg', 'Unknown error')
-                error_code = response_data.get('retCode')
-                self.logger.error(f"❌ Bybit API Error {error_code}: {error_msg}")
-                return None
-                
-            return response_data.get('result', {})
-            
-        except Exception as e:
-            self.logger.error(f"❌ Request error: {e}")
-            import traceback
-            self.logger.error(f"❌ Stack trace: {traceback.format_exc()}")
-            return None
-            
-    def check_api_status(self) -> Dict:
-        """Sprawdza status połączenia z Bybit API - ROZSZERZONA"""
-        status = {
-            'real_trading': self.real_trading,
-            'api_connected': False,
-            'balance_available': False,
-            'testnet': self.testnet,
-            'available_categories': [],
-            'message': '',
-            'balance': 0
-        }
-        
-        if not self.real_trading:
-            status['message'] = '🔄 Tryb wirtualny - brak kluczy API'
-            status['balance'] = self.virtual_balance
-            return status
-        
-        try:
-            # Sprawdź dostępne kategorie
-            available_categories = self.check_available_categories()
-            status['available_categories'] = available_categories
-            
-            # Spróbuj pobrać saldo
-            balance = self.get_account_balance()
-            
-            if balance is not None:
-                status['api_connected'] = True
-                status['balance_available'] = True
-                status['balance'] = balance
-                status['message'] = f'✅ Połączono z Bybit - Saldo: ${balance:.2f} - Kategorie: {available_categories}'
-            else:
-                status['api_connected'] = False
-                status['message'] = '❌ Błąd połączenia z Bybit - sprawdź klucze API'
-                    
-        except Exception as e:
-            status['api_connected'] = False
-            status['message'] = f'❌ Błąd API: {str(e)}'
-        
-        return status
-
-    def get_bybit_price(self, symbol: str) -> Optional[float]:
-        """Pobiera aktualną cenę z Bybit API"""
-        try:
-            endpoint = "/v5/market/tickers"
-            params = {
-                'category': 'linear',
-                'symbol': symbol
-            }
-            
-            self.logger.info(f"🔍 Fetching Bybit price for {symbol}")
-            
-            data = self.bybit_request('GET', endpoint, params)
-            
-            if data is None:
-                self.logger.error(f"❌ No data returned for {symbol}")
-                return None
-                
-            # data to result, które ma listę tickersów w 'list'
-            if 'list' not in data or len(data['list']) == 0:
-                self.logger.error(f"❌ Empty list in response for {symbol}")
-                # Spróbuj bez symbolu - pobierz wszystkie tickery
-                params_without_symbol = {'category': 'linear'}
-                all_data = self.bybit_request('GET', endpoint, params_without_symbol)
-                if all_data and 'list' in all_data:
-                    for ticker in all_data['list']:
-                        if ticker.get('symbol') == symbol:
-                            price_str = ticker.get('lastPrice')
-                            if price_str:
-                                price = float(price_str)
-                                self.logger.info(f"✅ Found price via all tickers: ${price}")
-                                return price
-                return None
-                
-            price_str = data['list'][0].get('lastPrice')
-            if not price_str:
-                self.logger.error(f"❌ No lastPrice for {symbol}")
-                return None
-                
-            price = float(price_str)
-            self.logger.info(f"✅ Price for {symbol}: ${price}")
-            return price
-            
-        except Exception as e:
-            self.logger.error(f"❌ Error getting Bybit price for {symbol}: {e}")
-            return None
-    
-    def get_account_balance(self) -> Optional[float]:
-        """Pobiera rzeczywiste saldo konta z Bybit"""
-        if not self.real_trading:
-            return self.virtual_balance
-                
-        try:
-            endpoint = "/v5/account/wallet-balance"
-            params = {'accountType': 'UNIFIED'}
-            
-            data = self.bybit_request('GET', endpoint, params, private=True)
-            if data and 'list' in data and len(data['list']) > 0:
-                total_equity = float(data['list'][0]['totalEquity'])
-                
                 self.logger.info(f"💰 Rzeczywiste saldo konta z Bybit: ${total_equity:.2f}")
                 return total_equity
             else:
@@ -678,64 +298,52 @@ class LLMTradingBot:
             self.logger.error(f"❌ Error getting PUBLIC futures price for {symbol}: {e}")
             return None
 
-    def find_working_futures_category(self):
-        """Znajduje działającą kategorię futures"""
-        categories_to_try = ['linear', 'linearperpetual', 'future', 'perpetual', 'contract']
-        
-        for category in categories_to_try:
-            url = "https://api.bybit.com/v5/market/tickers"
-            params = {'category': category, 'symbol': 'BTCUSDT'}
-            
-            self.logger.info(f"🔍 Testing futures category: {category}")
-            response = requests.get(url, params=params, timeout=5)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('retCode') == 0:
-                    self.logger.info(f"✅ Category '{category}' WORKS for futures!")
-                    return category
-        
-        self.logger.error("❌ No futures category works")
-        return None
-    
     def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
-        """Składa rzeczywiste zlecenie na Bybit - POPRAWIONA"""
+        """Składa zlecenie futures na Bybit używając pybit"""
         
-        self.logger.info(f"📦 PLACE_BYBIT_ORDER FUTURES: {symbol} {side} Qty: {quantity:.6f}")
+        self.logger.info(f"🚀 PLACE_BYBIT_ORDER: {symbol} {side} Qty: {quantity:.6f}")
         
         if not self.real_trading:
-            self.logger.info(f"🔄 Tryb wirtualny - symulacja zlecenia futures {side} dla {symbol}")
-            return f"virtual_order_{int(time.time())}"
+            order_id = f"virtual_{int(time.time())}"
+            self.logger.info(f"🔄 Virtual order: {order_id}")
+            return order_id
+            
+        if not self.session:
+            self.logger.error("❌ Brak sesji pybit")
+            return None
             
         try:
-            endpoint = "/v5/order/create"
-            
-            # Formatowanie quantity dla futures
+            # 1. Ustaw dźwignię
+            self.set_leverage(symbol, self.leverage)
+    
+            # 2. Formatowanie quantity
             quantity_str = self.format_quantity(symbol, quantity)
             
-            # Parametry dla futures linear - BEZ settleCoin dla create order
-            params = {
-                'category': 'linear',
-                'symbol': symbol,
-                'side': 'Buy' if side == 'LONG' else 'Sell',
-                'orderType': 'Market',
-                'qty': quantity_str,
-                'timeInForce': 'GTC',
-            }
+            # 3. Złóż zlecenie
+            response = self.session.place_order(
+                category="linear",
+                symbol=symbol,
+                side="Buy" if side == "LONG" else "Sell",
+                orderType="Market",
+                qty=quantity_str,
+                timeInForce="GTC",
+            )
             
-            self.logger.info(f"🌐 Futures order params: {params}")
+            self.logger.info(f"📨 Pybit response: {response}")
             
-            data = self.bybit_request('POST', endpoint, params, private=True)
-            
-            if data and 'orderId' in data:
-                self.logger.info(f"✅ Futures zlecenie złożone na Bybit: {symbol} {side} - ID: {data['orderId']}")
-                return data['orderId']
+            if response['retCode'] == 0:
+                order_id = response['result']['orderId']
+                self.logger.info(f"✅ ORDER SUCCESS: {symbol} {side} - ID: {order_id}")
+                return order_id
             else:
-                self.logger.error(f"❌ Błąd składania zlecenia futures na Bybit dla {symbol}")
+                error_msg = response.get('retMsg', 'Unknown error')
+                self.logger.error(f"❌ ORDER FAILED: {error_msg}")
                 return None
                 
         except Exception as e:
-            self.logger.error(f"❌ Error placing futures Bybit order: {e}")
+            self.logger.error(f"💥 CRITICAL ERROR in place_bybit_order: {e}")
+            import traceback
+            self.logger.error(f"💥 Stack trace: {traceback.format_exc()}")
             return None
 
     def analyze_simple_momentum(self, symbol: str) -> float:
@@ -852,10 +460,8 @@ class LLMTradingBot:
         profile = self.get_current_profile()
         
         # Pobierz rzeczywiste saldo konta
-        api_status = self.check_api_status()
-        if api_status['balance_available']:
-            real_balance = api_status['balance']
-        else:
+        real_balance = self.get_account_balance()
+        if real_balance is None:
             real_balance = self.virtual_balance
         
         base_allocation = {
@@ -883,51 +489,6 @@ class LLMTradingBot:
         margin_required = position_value / self.leverage
         
         return quantity, position_value, margin_required
-
-    def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
-        """Składa rzeczywiste zlecenie na Bybit - TYLKO FUTURES"""
-        
-        self.logger.info(f"📦 PLACE_BYBIT_ORDER FUTURES: {symbol} {side} Qty: {quantity:.6f}")
-        
-        if not self.real_trading:
-            self.logger.info(f"🔄 Tryb wirtualny - symulacja zlecenia futures {side} dla {symbol}")
-            return f"virtual_order_{int(time.time())}"
-            
-        try:
-            endpoint = "/v5/order/create"
-            
-            # Formatowanie quantity dla futures
-            quantity_str = self.format_quantity(symbol, quantity)
-            
-            # TYLKO futures linear
-            params = {
-                'category': 'linear',  # TYLKO LINEAR DLA FUTURES
-                'symbol': symbol,
-                'side': 'Buy' if side == 'LONG' else 'Sell',
-                'orderType': 'Market',
-                'qty': quantity_str,
-                'timeInForce': 'GTC',
-                'leverage': str(self.leverage),
-                'settleCoin': 'USDT'
-            }
-            
-            self.logger.info(f"🌐 Futures order params: {params}")
-            
-            # Upewnij się, że wszystkie wartości są stringami
-            params = {k: str(v) for k, v in params.items()}
-            
-            data = self.bybit_request('POST', endpoint, params, private=True)
-            
-            if data and 'orderId' in data:
-                self.logger.info(f"✅ Futures zlecenie złożone na Bybit: {symbol} {side} - ID: {data['orderId']}")
-                return data['orderId']
-            else:
-                self.logger.error(f"❌ Błąd składania zlecenia futures na Bybit dla {symbol}")
-                return None
-                
-        except Exception as e:
-            self.logger.error(f"❌ Error placing futures Bybit order: {e}")
-            return None
 
     def format_quantity(self, symbol: str, quantity: float) -> str:
         """Formatuje ilość zgodnie z wymaganiami Bybit dla każdego symbolu"""
@@ -963,34 +524,35 @@ class LLMTradingBot:
         return str(formatted_quantity)
 
     def close_bybit_position(self, symbol: str, side: str, quantity: float) -> bool:
-        """Zamyka pozycję na Bybit"""
+        """Zamyka pozycję na Bybit używając pybit"""
         if not self.real_trading:
             self.logger.info(f"🔄 Tryb wirtualny - symulacja zamknięcia pozycji {symbol}")
             return True
             
+        if not self.session:
+            self.logger.error("❌ Brak sesji pybit")
+            return False
+
         try:
-            endpoint = "/v5/order/create"
-            
-            # Dla zamknięcia pozycji używamy przeciwnego side
             close_side = 'Sell' if side == 'LONG' else 'Buy'
+            quantity_str = self.format_quantity(symbol, quantity)
             
-            params = {
-                'category': 'linear',
-                'symbol': symbol,
-                'side': close_side,
-                'orderType': 'Market',
-                'qty': str(round(quantity, 4)),
-                'reduceOnly': True,  # Tylko redukcja pozycji
-                'settleCoin': 'USDT',  # DODAJ TEN PARAMETR
-                'timeInForce': 'GTC'
-            }
+            response = self.session.place_order(
+                category="linear",
+                symbol=symbol,
+                side=close_side,
+                orderType="Market",
+                qty=quantity_str,
+                timeInForce="GTC",
+                reduceOnly=True,  # Ważne: tylko redukcja istniejącej pozycji
+            )
             
-            data = self.bybit_request('POST', endpoint, params, private=True)
-            if data and 'orderId' in data:
-                self.logger.info(f"✅ Pozycja zamknięta na Bybit: {symbol} - ID: {data['orderId']}")
+            if response['retCode'] == 0:
+                self.logger.info(f"✅ Pozycja zamknięta na Bybit: {symbol} - ID: {response['result']['orderId']}")
                 return True
             else:
-                self.logger.error(f"❌ Błąd zamykania pozycji na Bybit dla {symbol}")
+                error_msg = response.get('retMsg', 'Unknown error')
+                self.logger.error(f"❌ Błąd zamykania pozycji na Bybit dla {symbol}: {error_msg}")
                 return False
                 
         except Exception as e:
@@ -998,21 +560,23 @@ class LLMTradingBot:
             return False
 
     def get_bybit_positions(self) -> List[Dict]:
-        """Pobiera aktywne pozycje z Bybit"""
+        """Pobiera aktywne pozycje z Bybit używając pybit"""
         if not self.real_trading:
             return []
             
+        if not self.session:
+            self.logger.error("❌ Brak sesji pybit")
+            return []
+
         try:
-            endpoint = "/v5/position/list"
-            params = {
-                'category': 'linear',
-                'settleCoin': 'USDT'  # DODAJ TEN PARAMETR
-            }
+            response = self.session.get_positions(
+                category="linear",
+                symbol=""  # Pobierz wszystkie pozycje
+            )
             
-            data = self.bybit_request('GET', endpoint, params, private=True)
-            if data and 'list' in data:
+            if response['retCode'] == 0:
                 active_positions = []
-                for pos in data['list']:
+                for pos in response['result']['list']:
                     if float(pos['size']) > 0:  # Tylko pozycje z wielkością > 0
                         active_positions.append({
                             'symbol': pos['symbol'],
@@ -1024,26 +588,25 @@ class LLMTradingBot:
                             'liq_price': float(pos['liqPrice']) if pos['liqPrice'] else None
                         })
                 return active_positions
-            return []
+            else:
+                self.logger.error(f"❌ Błąd pobierania pozycji z Bybit: {response.get('retMsg', 'Unknown')}")
+                return []
             
         except Exception as e:
             self.logger.error(f"❌ Error getting Bybit positions: {e}")
             return []
 
     def sync_with_bybit(self):
-        """Synchronizuje stan z rzeczywistymi pozycjami na Bybit - UPDATED z pybit"""
+        """Synchronizuje stan z rzeczywistymi pozycjami na Bybit"""
         if not self.real_trading:
             return
             
         try:
             # Pobierz aktywne pozycje z Bybit
-            if PYBIT_AVAILABLE and self.session:
-                bybit_positions = self.get_bybit_positions_pybit()
-                real_balance = self.get_account_balance_pybit()
-            else:
-                bybit_positions = self.get_bybit_positions()
-                real_balance = self.get_account_balance()
+            bybit_positions = self.get_bybit_positions()
             
+            # Aktualizuj saldo konta
+            real_balance = self.get_account_balance()
             if real_balance:
                 self.virtual_balance = real_balance
                 self.virtual_capital = real_balance
@@ -1055,14 +618,18 @@ class LLMTradingBot:
             self.logger.error(f"❌ Error syncing with Bybit: {e}")
 
     def get_available_futures_symbols(self):
-        """Pobiera listę dostępnych futures symboli"""
-        try:
-            endpoint = "/v5/market/tickers"
-            params = {'category': 'linear'}
+        """Pobiera listę dostępnych futures symboli używając pybit"""
+        if not self.session:
+            self.logger.error("❌ Brak sesji pybit")
+            return []
             
-            data = self.bybit_request('GET', endpoint, params)
-            if data and 'list' in data:
-                symbols = [ticker['symbol'] for ticker in data['list']]
+        try:
+            response = self.session.get_tickers(
+                category='linear'
+            )
+            
+            if response['retCode'] == 0:
+                symbols = [ticker['symbol'] for ticker in response['result']['list']]
                 self.logger.info(f"📊 Available futures symbols: {len(symbols)}")
                 # Pokaż tylko nasze aktywa
                 our_symbols = [s for s in symbols if s in self.assets]
@@ -1139,19 +706,20 @@ class LLMTradingBot:
         # Sprawdź czy można otworzyć minimalną pozycję
         min_margin = min_position_value / self.leverage
         
-        api_status = self.check_api_status()
-        available_balance = api_status['balance'] if api_status['balance_available'] else self.virtual_balance
+        real_balance = self.get_account_balance()
+        if real_balance is None:
+            real_balance = self.virtual_balance
         
-        if available_balance < min_margin:
-            self.logger.warning(f"💰 Insufficient balance for {symbol}. Available: ${available_balance:.2f}, Required: ${min_margin:.2f}")
+        if real_balance < min_margin:
+            self.logger.warning(f"💰 Insufficient balance for {symbol}. Available: ${real_balance:.2f}, Required: ${min_margin:.2f}")
             return False
         
         return True
     
     def open_llm_position(self, symbol: str):
-        """Otwiera pozycję - ULEPSZONA WERSJA"""
+        """Otwiera pozycję - WYMUSZONE TESTY"""
         
-        self.logger.info(f"🔍 OPEN_POSITION with PYBIT for {symbol}")
+        self.logger.info(f"🔍 TEST OPEN_POSITION for {symbol}")
         
         try:
             # 1. Pobierz cenę
@@ -1168,30 +736,30 @@ class LLMTradingBot:
             self.logger.info(f"🎯 FORCED SIGNAL: {signal} (Confidence: {confidence})")
     
             # 3. Oblicz wielkość pozycji (bardzo mała dla testu)
-            test_quantity = 0.001
+            test_quantity = 0.001  # Bardzo mała ilość dla testu
+            if symbol == "BTCUSDT":
+                test_quantity = 0.001
+            elif symbol == "ETHUSDT":
+                test_quantity = 0.01
+            else:
+                test_quantity = 1.0
+    
+            # 4. Sprawdź minimalną wartość zlecenia
             order_value = test_quantity * current_price
-            
+            self.logger.info(f"📦 Test order - Qty: {test_quantity}, Value: ${order_value:.2f}")
+    
             if order_value < 5:
+                self.logger.warning(f"⚠️ Order value too small: ${order_value:.2f}")
+                # Zwiększ ilość do minimum
                 test_quantity = 5 / current_price
                 self.logger.info(f"📦 Adjusted quantity: {test_quantity:.6f}")
     
-            # 4. SPRÓBUJ ZŁOŻYĆ ZLECENIE PRZEZ PYBIT
-            self.logger.info(f"🚀 ATTEMPTING PYBIT ORDER...")
-            
-            if PYBIT_AVAILABLE and self.session:
-                order_id = self.place_bybit_order_pybit(symbol, signal, test_quantity, current_price)
-            else:
-                order_id = self.place_bybit_order(symbol, signal, test_quantity, current_price)
+            # 5. SPRÓBUJ ZŁOŻYĆ ZLECENIE
+            self.logger.info(f"🚀 ATTEMPTING REAL ORDER...")
+            order_id = self.place_bybit_order(symbol, signal, test_quantity, current_price)
             
             if order_id:
                 self.logger.info(f"🎉 SUCCESS! Order placed: {order_id}")
-                
-                # 5. WERYFIKUJ POZYCJĘ
-                position_verified = self.verify_position_opened(order_id, symbol)
-                if position_verified:
-                    self.logger.info(f"✅ POSITION VERIFIED: {symbol} {signal}")
-                else:
-                    self.logger.warning(f"⚠️ Position verification inconclusive")
                 
                 # Zapisz pozycję
                 position_id = order_id
@@ -1218,8 +786,9 @@ class LLMTradingBot:
                 return None
                 
         except Exception as e:
-            self.logger.error(f"💥 Error in open position: {e}")
+            self.logger.error(f"💥 Error in test position: {e}")
             return None
+
     def update_positions_pnl(self):
         """Aktualizuje P&L wszystkich pozycji używając rzeczywistych cen z Bybit API"""
         total_unrealized = 0
@@ -1255,10 +824,10 @@ class LLMTradingBot:
             confidence_count += 1
         
         # Użyj rzeczywistego salda konta
-        api_status = self.check_api_status()
-        if api_status['balance_available']:
-            account_value = api_status['balance'] + total_unrealized
-            available_cash = api_status['balance']
+        real_balance = self.get_account_balance()
+        if real_balance is not None:
+            account_value = real_balance + total_unrealized
+            available_cash = real_balance
         else:
             account_value = self.virtual_capital + total_unrealized
             available_cash = self.virtual_balance
@@ -1276,7 +845,7 @@ class LLMTradingBot:
         self.dashboard_data['last_update'] = datetime.now()
 
     def debug_api_connection(self):
-        """Testuje połączenie z API i próbuje złożyć testowe zlecenie"""
+        """Testuje połączenie z API i próbuje złożyć testowe zlecenie używając pybit"""
         
         self.logger.info("🔧 DEBUG API CONNECTION")
         
@@ -1474,6 +1043,46 @@ class LLMTradingBot:
         # Sprawdź API status
         api_status = self.check_api_status()
         self.logger.info(f"🔗 API Status: {api_status}")
+
+    def check_api_status(self) -> Dict:
+        """Sprawdza status połączenia z Bybit API - ROZSZERZONA"""
+        status = {
+            'real_trading': self.real_trading,
+            'api_connected': False,
+            'balance_available': False,
+            'testnet': self.testnet,
+            'available_categories': [],
+            'message': '',
+            'balance': 0
+        }
+        
+        if not self.real_trading:
+            status['message'] = '🔄 Tryb wirtualny - brak kluczy API'
+            status['balance'] = self.virtual_balance
+            return status
+        
+        try:
+            # Sprawdź dostępne kategorie
+            available_categories = self.check_available_categories()
+            status['available_categories'] = available_categories
+            
+            # Spróbuj pobrać saldo
+            balance = self.get_account_balance()
+            
+            if balance is not None:
+                status['api_connected'] = True
+                status['balance_available'] = True
+                status['balance'] = balance
+                status['message'] = f'✅ Połączono z Bybit - Saldo: ${balance:.2f} - Kategorie: {available_categories}'
+            else:
+                status['api_connected'] = False
+                status['message'] = '❌ Błąd połączenia z Bybit - sprawdź klucze API'
+                    
+        except Exception as e:
+            status['api_connected'] = False
+            status['message'] = f'❌ Błąd API: {str(e)}'
+        
+        return status
 
     def get_dashboard_data(self):
         """Przygotowuje dane dla dashboardu używając rzeczywistych cen z Bybit API"""
