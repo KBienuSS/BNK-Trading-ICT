@@ -154,7 +154,7 @@ class LLMTradingBot:
             params = {'category': category}
             
             data = self.bybit_request('GET', endpoint, params)
-            if data and 'retCode' in data and data['retCode'] == 0:
+            if data is not None:  # bybit_request zwraca None w przypadku błędu, a jak nie to result
                 available_categories.append(category)
                 self.logger.info(f"✅ Category '{category}' is available")
             else:
@@ -318,6 +318,7 @@ class LLMTradingBot:
                 self.logger.error(f"❌ No data returned for {symbol}")
                 return None
                 
+            # data to result, które ma listę tickersów w 'list'
             if 'list' not in data or len(data['list']) == 0:
                 self.logger.error(f"❌ Empty list in response for {symbol}")
                 # Spróbuj bez symbolu - pobierz wszystkie tickery
@@ -372,7 +373,6 @@ class LLMTradingBot:
     def get_current_price(self, symbol: str) -> Optional[float]:
         """Pobiera cenę futures TYLKO przez PUBLIC API - bez autoryzacji"""
         try:
-            # UŻYJ TYLKO PUBLIC REQUESTS - bez self.bybit_request()
             url = "https://api.bybit.com/v5/market/tickers"
             params = {
                 'category': 'linear',
@@ -381,21 +381,24 @@ class LLMTradingBot:
             
             self.logger.info(f"🔍 Fetching PUBLIC FUTURES price for {symbol}")
             
-            # UŻYJ ZWYKŁEGO REQUESTS.GET - bez nagłówków autoryzacji
             response = requests.get(url, params=params, timeout=10)
-            
             self.logger.info(f"📨 Public API status: {response.status_code}")
             
             if response.status_code == 200:
                 data = response.json()
                 self.logger.info(f"📄 Public API data: {data}")
                 
-                if data.get('retCode') == 0 and 'list' in data and len(data['list']) > 0:
-                    price_str = data['list'][0].get('lastPrice')
-                    if price_str:
-                        price = float(price_str)
-                        self.logger.info(f"✅ PUBLIC FUTURES price for {symbol}: ${price}")
-                        return price
+                # Sprawdzamy retCode w głównej części odpowiedzi
+                if data.get('retCode') == 0:
+                    result = data.get('result', {})
+                    if 'list' in result and len(result['list']) > 0:
+                        price_str = result['list'][0].get('lastPrice')
+                        if price_str:
+                            price = float(price_str)
+                            self.logger.info(f"✅ PUBLIC FUTURES price for {symbol}: ${price}")
+                            return price
+                    else:
+                        self.logger.error(f"❌ No data in result for {symbol}")
                 else:
                     error_msg = data.get('retMsg', 'Unknown error')
                     self.logger.error(f"❌ Public API error: {error_msg}")
