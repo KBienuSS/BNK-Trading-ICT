@@ -241,34 +241,43 @@ class LLMTradingBot:
         """Pobiera aktualną cenę z Bybit API"""
         try:
             endpoint = "/v5/market/tickers"
-            params = {'category': 'linear', 'symbol': symbol}
+            params = {
+                'category': 'linear',
+                'symbol': symbol
+            }
             
             data = self.bybit_request('GET', endpoint, params)
             if data and 'list' in data and len(data['list']) > 0:
-                price = float(data['list'][0]['lastPrice'])
-                
-                # Zapisz w cache
-                self.price_cache[symbol] = {
-                    'price': price,
-                    'timestamp': datetime.now()
-                }
-                
-                # Zapisz w historii dla analizy
-                if symbol not in self.price_history:
-                    self.price_history[symbol] = []
-                
-                self.price_history[symbol].append({
-                    'price': price,
-                    'timestamp': datetime.now()
-                })
-                
-                # Ogranicz historię do ostatnich 50 punktów
-                if len(self.price_history[symbol]) > 50:
-                    self.price_history[symbol] = self.price_history[symbol][-50:]
-                
-                return price
+                price_str = data['list'][0]['lastPrice']
+                # Sprawdź czy cena jest poprawna
+                if price_str and price_str.strip():
+                    price = float(price_str)
+                    
+                    # Zapisz w cache
+                    self.price_cache[symbol] = {
+                        'price': price,
+                        'timestamp': datetime.now()
+                    }
+                    
+                    # Zapisz w historii dla analizy
+                    if symbol not in self.price_history:
+                        self.price_history[symbol] = []
+                    
+                    self.price_history[symbol].append({
+                        'price': price,
+                        'timestamp': datetime.now()
+                    })
+                    
+                    # Ogranicz historię do ostatnich 50 punktów
+                    if len(self.price_history[symbol]) > 50:
+                        self.price_history[symbol] = self.price_history[symbol][-50:]
+                    
+                    return price
+                else:
+                    self.logger.warning(f"⚠️ Empty price data for {symbol}")
+                    return None
             else:
-                self.logger.warning(f"⚠️ Brak danych cenowych dla {symbol}")
+                self.logger.warning(f"⚠️ No price data for {symbol}")
                 return None
                 
         except Exception as e:
