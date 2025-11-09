@@ -238,49 +238,49 @@ class LLMTradingBot:
         return status
 
     def get_bybit_price(self, symbol: str) -> Optional[float]:
-    """Pobiera aktualną cenę z Bybit API"""
-    try:
-        endpoint = "/v5/market/tickers"
-        params = {
-            'category': 'linear',
-            'symbol': symbol
-        }
-        
-        self.logger.info(f"🔍 Fetching Bybit price for {symbol}")
-        
-        data = self.bybit_request('GET', endpoint, params)
-        
-        if data is None:
-            self.logger.error(f"❌ No data returned for {symbol}")
-            return None
+        """Pobiera aktualną cenę z Bybit API"""
+        try:
+            endpoint = "/v5/market/tickers"
+            params = {
+                'category': 'linear',
+                'symbol': symbol
+            }
             
-        if 'list' not in data or len(data['list']) == 0:
-            self.logger.error(f"❌ Empty list in response for {symbol}")
-            # Spróbuj bez symbolu - pobierz wszystkie tickery
-            params_without_symbol = {'category': 'linear'}
-            all_data = self.bybit_request('GET', endpoint, params_without_symbol)
-            if all_data and 'list' in all_data:
-                for ticker in all_data['list']:
-                    if ticker.get('symbol') == symbol:
-                        price_str = ticker.get('lastPrice')
-                        if price_str:
-                            price = float(price_str)
-                            self.logger.info(f"✅ Found price via all tickers: ${price}")
-                            return price
-            return None
+            self.logger.info(f"🔍 Fetching Bybit price for {symbol}")
             
-        price_str = data['list'][0].get('lastPrice')
-        if not price_str:
-            self.logger.error(f"❌ No lastPrice for {symbol}")
-            return None
+            data = self.bybit_request('GET', endpoint, params)
             
-        price = float(price_str)
-        self.logger.info(f"✅ Price for {symbol}: ${price}")
-        return price
-        
-    except Exception as e:
-        self.logger.error(f"❌ Error getting Bybit price for {symbol}: {e}")
-        return None
+            if data is None:
+                self.logger.error(f"❌ No data returned for {symbol}")
+                return None
+                
+            if 'list' not in data or len(data['list']) == 0:
+                self.logger.error(f"❌ Empty list in response for {symbol}")
+                # Spróbuj bez symbolu - pobierz wszystkie tickery
+                params_without_symbol = {'category': 'linear'}
+                all_data = self.bybit_request('GET', endpoint, params_without_symbol)
+                if all_data and 'list' in all_data:
+                    for ticker in all_data['list']:
+                        if ticker.get('symbol') == symbol:
+                            price_str = ticker.get('lastPrice')
+                            if price_str:
+                                price = float(price_str)
+                                self.logger.info(f"✅ Found price via all tickers: ${price}")
+                                return price
+                return None
+                
+            price_str = data['list'][0].get('lastPrice')
+            if not price_str:
+                self.logger.error(f"❌ No lastPrice for {symbol}")
+                return None
+                
+            price = float(price_str)
+            self.logger.info(f"✅ Price for {symbol}: ${price}")
+            return price
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error getting Bybit price for {symbol}: {e}")
+            return None
 
     def get_account_balance(self) -> Optional[float]:
         """Pobiera rzeczywiste saldo konta z Bybit"""
