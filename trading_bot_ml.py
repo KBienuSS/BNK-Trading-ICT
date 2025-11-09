@@ -189,19 +189,19 @@ class LLMTradingBot:
         return available_categories
 
     def generate_bybit_signature(self, params: Dict, timestamp: str, recv_window: str = "5000") -> str:
-        """Generuje signature dla Bybit API v5 - POPRAWIONA DEFINITYWNIE"""
+        """Generuje signature dla Bybit API v5 - POPRAWIONA WERSJA"""
         try:
-            # ZAWSZE: timestamp + api_key + recv_window
+            # Podstawowy payload: timestamp + api_key + recv_window
             signature_payload = timestamp + self.api_key + recv_window
             
-            # DLA WSZYSTKICH REQUESTÓW: dodaj parametry w query string format
+            # Dla POST: parametry muszą być w formacie query string (alfabetycznie)
             if params:
-                # Konwertuj wszystkie wartości do string
+                # Konwertuj wszystkie wartości do string i sortuj
                 string_params = {}
                 for key, value in params.items():
                     string_params[str(key)] = str(value)
                 
-                # Posortuj parametry alfabetycznie
+                # Posortuj parametry alfabetycznie po kluczach
                 sorted_params = sorted(string_params.items())
                 
                 # Stwórz query string
@@ -209,7 +209,6 @@ class LLMTradingBot:
                 signature_payload += param_str
             
             self.logger.info(f"🔐 Signature payload: {signature_payload}")
-            self.logger.info(f"🔐 Payload length: {len(signature_payload)}")
             
             # Generuj signature
             signature = hmac.new(
@@ -228,7 +227,7 @@ class LLMTradingBot:
             return ""
     
     def bybit_request(self, method: str, endpoint: str, params: Dict = None, private: bool = False) -> Optional[Dict]:
-        """Wykonuje request do Bybit API - POPRAWIONA"""
+        """Wykonuje request do Bybit API - POPRAWIONA WERSJA"""
         url = f"{self.base_url}{endpoint}"
         headers = {}
         
@@ -257,7 +256,7 @@ class LLMTradingBot:
             if method.upper() == 'GET':
                 response = requests.get(url, params=params, headers=headers, timeout=10)
             elif method.upper() == 'POST':
-                # Dla POST: parametry w body JSON
+                # Dla POST: parametry w body JSON, ale signature używa query string
                 response = requests.post(url, json=params, headers=headers, timeout=10)
             else:
                 return None
