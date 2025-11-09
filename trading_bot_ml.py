@@ -370,50 +370,70 @@ class LLMTradingBot:
             return None
 
     def get_current_price(self, symbol: str) -> Optional[float]:
-        """Pobiera aktualną cenę z Bybit API - TYLKO FUTURES"""
+        """Pobiera cenę TYLKO przez public endpoint - dla celów informacyjnych"""
         try:
-            endpoint = "/v5/market/tickers"
+            # UŻYJ PUBLIC BYBIT API DO POBRANIA CENY
+            url = "https://api.bybit.com/v5/market/tickers"
+            params = {'category': 'spot', 'symbol': symbol}
             
-            # TYLKO futures linear
-            params = {
-                'category': 'linear',
-                'symbol': symbol
-            }
+            response = requests.get(url, params=params, timeout=5)
             
-            self.logger.info(f"🔍 Fetching futures price for {symbol}")
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('retCode') == 0 and 'list' in data and len(data['list']) > 0:
+                    price_str = data['list'][0].get('lastPrice')
+                    if price_str:
+                        price = float(price_str)
+                        self.logger.info(f"✅ Public price for {symbol}: ${price}")
+                        return price
             
-            data = self.bybit_request('GET', endpoint, params)
-            
-            if data is not None and 'list' in data and len(data['list']) > 0:
-                price_str = data['list'][0].get('lastPrice')
-                if price_str:
-                    price = float(price_str)
-                    self.logger.info(f"✅ Futures price for {symbol}: ${price}")
-                    return price
-                else:
-                    self.logger.error(f"❌ No lastPrice in response for {symbol}")
-            else:
-                self.logger.warning(f"⚠️ No futures data found for {symbol}")
-                
-            # Fallback: spróbuj pobrać wszystkie tickery i znaleźć symbol
-            self.logger.info(f"🔍 Trying to fetch all futures tickers")
-            params_all = {'category': 'linear'}
-            all_data = self.bybit_request('GET', endpoint, params_all)
-            
-            if all_data and 'list' in all_data:
-                for ticker in all_data['list']:
-                    if ticker.get('symbol') == symbol:
-                        price_str = ticker.get('lastPrice')
-                        if price_str:
-                            price = float(price_str)
-                            self.logger.info(f"✅ Found futures price via all tickers: ${price}")
-                            return price
-            
-            self.logger.error(f"❌ Could not get futures price for {symbol}")
+            self.logger.error(f"❌ Could not get public price for {symbol}")
             return None
                 
         except Exception as e:
-            self.logger.error(f"❌ Error getting futures price for {symbol}: {e}")
+            self.logger.error(f"❌ Error getting public price for {symbol}: {e}")
+            return None
+    
+    def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
+        """Składa rzeczywiste zlecenie - UŻYWA AUTORYZOWANEGO API"""
+        
+        self.logger.info(f"📦 PLACE_BYBIT_ORDER: {symbol} {side} Qty: {quantity:.6f}")
+        
+        if not self.real_trading:
+            self.logger.info(f"🔄 Tryb wirtualny - symulacja zlecenia {side} dla {symbol}")
+            return f"virtual_order_{int(time.time())}"
+            
+        try:
+            endpoint = "/v5/order/create"
+            
+            # Formatowanie quantity
+            quantity_str = self.format_quantity(symbol, quantity)
+            
+            params = {
+                'category': 'linear',
+                'symbol': symbol,
+                'side': 'Buy' if side == 'LONG' else 'Sell',
+                'orderType': 'Market',  # Market order NIE wymaga ceny!
+                'qty': quantity_str,
+                'timeInForce': 'GTC',
+                'leverage': str(self.leverage),
+                'settleCoin': 'USDT'
+            }
+            
+            self.logger.info(f"🌐 Bybit ORDER params: {params}")
+            
+            # UŻYJ AUTORYZOWANEGO API DO ZLECENIA
+            data = self.bybit_request('POST', endpoint, params, private=True)
+            
+            if data and 'orderId' in data:
+                self.logger.info(f"✅ Zlecenie złożone na Bybit: {symbol} {side} - ID: {data['orderId']}")
+                return data['orderId']
+            else:
+                self.logger.error(f"❌ Błąd składania zlecenia na Bybit dla {symbol}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error placing Bybit order: {e}")
             return None
 
     def analyze_simple_momentum(self, symbol: str) -> float:
