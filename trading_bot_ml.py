@@ -1084,12 +1084,3 @@ class LLMTradingBot:
         """Zatrzymuje trading"""
         self.is_running = False
         self.logger.info("🛑 LLM Trading Bot stopped")
-
-    # Sprawdź status API na starcie
-    api_status = trading_bot.check_api_status()
-    print(f"📊 API Status: {api_status['message']}")
-    
-    if not trading_bot.real_trading:
-        print("⚠️  WARNING: Running in VIRTUAL MODE - set BYBIT_API_KEY and BYBIT_API_SECRET environment variables for real trading")
-    
-    app.run(debug=True, host='0.0.0.0', port=5000)
