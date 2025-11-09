@@ -370,39 +370,43 @@ class LLMTradingBot:
             return None
 
     def get_current_price(self, symbol: str) -> Optional[float]:
-        """Pobiera cenę futures przez PUBLIC API"""
+        """Pobiera cenę futures TYLKO przez PUBLIC API - bez autoryzacji"""
         try:
+            # UŻYJ TYLKO PUBLIC REQUESTS - bez self.bybit_request()
             url = "https://api.bybit.com/v5/market/tickers"
             params = {
                 'category': 'linear',
                 'symbol': symbol
             }
             
-            self.logger.info(f"🔍 Fetching FUTURES price for {symbol}")
+            self.logger.info(f"🔍 Fetching PUBLIC FUTURES price for {symbol}")
             
-            response = requests.get(url, params=params, timeout=5)
+            # UŻYJ ZWYKŁEGO REQUESTS.GET - bez nagłówków autoryzacji
+            response = requests.get(url, params=params, timeout=10)
+            
+            self.logger.info(f"📨 Public API status: {response.status_code}")
             
             if response.status_code == 200:
                 data = response.json()
+                self.logger.info(f"📄 Public API data: {data}")
                 
                 if data.get('retCode') == 0 and 'list' in data and len(data['list']) > 0:
                     price_str = data['list'][0].get('lastPrice')
                     if price_str:
                         price = float(price_str)
-                        self.logger.info(f"✅ FUTURES price for {symbol}: ${price}")
+                        self.logger.info(f"✅ PUBLIC FUTURES price for {symbol}: ${price}")
                         return price
                 else:
                     error_msg = data.get('retMsg', 'Unknown error')
-                    self.logger.error(f"❌ Futures API error: {error_msg}")
+                    self.logger.error(f"❌ Public API error: {error_msg}")
+            else:
+                self.logger.error(f"❌ HTTP error: {response.status_code}")
+                self.logger.error(f"❌ Response: {response.text}")
             
             return None
                 
         except Exception as e:
-            self.logger.error(f"❌ Error getting FUTURES price for {symbol}: {e}")
-            return None
-                
-        except Exception as e:
-            self.logger.error(f"❌ Error getting FUTURES price for {symbol}: {e}")
+            self.logger.error(f"❌ Error getting PUBLIC futures price for {symbol}: {e}")
             return None
 
     def find_working_futures_category(self):
