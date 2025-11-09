@@ -213,7 +213,7 @@ class LLMTradingBot:
             return None
             
     def set_leverage_pybit(self, symbol: str, leverage: int) -> bool:
-        """Ustawia dźwignię używając pybit"""
+        """Ustawia dźwignię używając pybit - POPRAWIONA"""
         if not self.real_trading or not self.session:
             return True
             
@@ -229,11 +229,52 @@ class LLMTradingBot:
                 self.logger.info(f"✅ PYBIT Leverage set: {leverage}x dla {symbol}")
                 return True
             else:
-                self.logger.warning(f"⚠️ PYBIT Leverage setting warning: {response.get('retMsg', 'Unknown')}")
-                return False
+                # Błąd 110043 oznacza, że dźwignia jest już ustawiona - traktuj jako sukces
+                if response['retCode'] == 110043:
+                    self.logger.info(f"ℹ️ Dźwignia już ustawiona na {leverage}x dla {symbol}")
+                    return True
+                else:
+                    error_msg = response.get('retMsg', 'Unknown error')
+                    self.logger.warning(f"⚠️ PYBIT Leverage setting warning: {error_msg}")
+                    return False
                 
         except Exception as e:
             self.logger.error(f"❌ PYBIT Leverage error: {e}")
+            return False
+
+    def verify_position_opened(self, order_id: str, symbol: str) -> bool:
+        """Weryfikuje czy pozycja została otwarta"""
+        if not self.real_trading or not self.session:
+            return True
+            
+        try:
+            # Sprawdź zlecenie
+            order_response = self.session.get_order_history(
+                category="linear",
+                orderId=order_id
+            )
+            
+            if order_response['retCode'] == 0 and order_response['result']['list']:
+                order_status = order_response['result']['list'][0]['orderStatus']
+                self.logger.info(f"📊 Order status: {order_status}")
+                
+                # Sprawdź pozycję
+                position_response = self.session.get_positions(
+                    category="linear", 
+                    symbol=symbol
+                )
+                
+                if position_response['retCode'] == 0:
+                    positions = position_response['result']['list']
+                    active_positions = [p for p in positions if float(p['size']) > 0]
+                    self.logger.info(f"📊 Active positions for {symbol}: {len(active_positions)}")
+                    
+                    return len(active_positions) > 0
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error verifying position: {e}")
             return False
             
     def close_bybit_position_pybit(self, symbol: str, side: str, quantity: float) -> bool:
@@ -1108,7 +1149,7 @@ class LLMTradingBot:
         return True
     
     def open_llm_position(self, symbol: str):
-        """Otwiera pozycję - UPDATED z pybit"""
+        """Otwiera pozycję - ULEPSZONA WERSJA"""
         
         self.logger.info(f"🔍 OPEN_POSITION with PYBIT for {symbol}")
         
@@ -1145,6 +1186,13 @@ class LLMTradingBot:
             if order_id:
                 self.logger.info(f"🎉 SUCCESS! Order placed: {order_id}")
                 
+                # 5. WERYFIKUJ POZYCJĘ
+                position_verified = self.verify_position_opened(order_id, symbol)
+                if position_verified:
+                    self.logger.info(f"✅ POSITION VERIFIED: {symbol} {signal}")
+                else:
+                    self.logger.warning(f"⚠️ Position verification inconclusive")
+                
                 # Zapisz pozycję
                 position_id = order_id
                 self.positions[position_id] = {
@@ -1172,7 +1220,6 @@ class LLMTradingBot:
         except Exception as e:
             self.logger.error(f"💥 Error in open position: {e}")
             return None
-
     def update_positions_pnl(self):
         """Aktualizuje P&L wszystkich pozycji używając rzeczywistych cen z Bybit API"""
         total_unrealized = 0
