@@ -219,45 +219,39 @@ class LLMTradingBot:
             return ""
     
     def bybit_request(self, method: str, endpoint: str, params: Dict = None, private: bool = False) -> Optional[Dict]:
-        """Wykonuje request do Bybit API - POPRAWIONA"""
+        """Wykonuje request do Bybit API - Z ROZSZERZONYM DEBUGOWANIEM"""
         if not self.real_trading and private:
             self.logger.warning("⚠️ Tryb wirtualny - pomijam request do Bybit")
             return None
             
         url = f"{self.base_url}{endpoint}"
         headers = {}
-        request_params = None
-        json_data = None
-        
-        if private:
-            timestamp = str(int(time.time() * 1000))
-            
-            # Dla signature używamy query string format
-            signature = self.generate_bybit_signature(params, timestamp, method)
-            
-            if not signature:
-                self.logger.error("❌ Failed to generate signature")
-                return None
-                
-            headers = {
-                'X-BAPI-API-KEY': self.api_key,
-                'X-BAPI-SIGN': signature,
-                'X-BAPI-TIMESTAMP': timestamp,
-                'X-BAPI-RECV-WINDOW': '5000',
-                'Content-Type': 'application/json'
-            }
-            
-            # Dla POST: parametry w JSON body
-            if method.upper() == 'POST':
-                json_data = params
-            else:
-                request_params = params
         
         try:
-            self.logger.info(f"🌐 Bybit Request: {method} {url}")
+            if private:
+                timestamp = str(int(time.time() * 1000))
+                recv_window = "5000"
+                
+                self.logger.info(f"🔐 Generating signature for private request...")
+                signature = self.generate_bybit_signature(params, timestamp, recv_window)
+                if not signature:
+                    self.logger.error("❌ Failed to generate signature")
+                    return None
+                    
+                headers = {
+                    'X-BAPI-API-KEY': self.api_key,
+                    'X-BAPI-SIGN': signature,
+                    'X-BAPI-TIMESTAMP': timestamp,
+                    'X-BAPI-RECV-WINDOW': recv_window,
+                    'Content-Type': 'application/json'
+                }
+                self.logger.info(f"🔐 Headers prepared (API Key: {self.api_key[:10]}...)")
+            
+            self.logger.info(f"🌐 Making {method} request to: {url}")
             self.logger.info(f"📦 Request params: {params}")
-            self.logger.info(f"🔐 Headers: {headers}")
-
+            self.logger.info(f"📋 Headers: { {k: v for k, v in headers.items() if k != 'X-BAPI-API-KEY'} }")
+            
+            start_time = time.time()
             if method.upper() == 'GET':
                 response = requests.get(url, params=params, headers=headers, timeout=10)
             elif method.upper() == 'POST':
@@ -265,25 +259,36 @@ class LLMTradingBot:
             else:
                 self.logger.error(f"❌ Nieobsługiwana metoda HTTP: {method}")
                 return None
-
-            self.logger.info(f"📨 Response status: {response.status_code}")
-            response_text = response.text
-            self.logger.info(f"📄 Response text: {response_text}")
             
-            response.raise_for_status()
-            data = response.json()
+            response_time = time.time() - start_time
+            self.logger.info(f"📨 Response received in {response_time:.2f}s, status: {response.status_code}")
             
-            if data.get('retCode') != 0:
-                self.logger.error(f"❌ Bybit API Error: {data.get('retMsg', 'Unknown error')} (Code: {data.get('retCode')})")
+            # Sprawdź czy odpowiedź jest pusta
+            if not response.text:
+                self.logger.error("❌ Empty response from Bybit API")
                 return None
                 
-            return data.get('result', {})
+            response_data = response.json()
+            self.logger.info(f"📄 Full API response: {response_data}")
             
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"❌ Bybit API Request Error: {e}")
+            if response_data.get('retCode') != 0:
+                error_msg = response_data.get('retMsg', 'Unknown error')
+                error_code = response_data.get('retCode')
+                self.logger.error(f"❌ Bybit API Error: {error_msg} (Code: {error_code})")
+                return None
+                
+            return response_data.get('result', {})
+            
+        except requests.exceptions.Timeout:
+            self.logger.error("❌ Request timeout to Bybit API")
+            return None
+        except requests.exceptions.ConnectionError:
+            self.logger.error("❌ Connection error to Bybit API")
             return None
         except Exception as e:
-            self.logger.error(f"❌ Unexpected error in Bybit request: {e}")
+            self.logger.error(f"❌ Error in Bybit request: {e}")
+            import traceback
+            self.logger.error(f"❌ Stack trace: {traceback.format_exc()}")
             return None
             
     def check_api_status(self) -> Dict:
@@ -457,19 +462,24 @@ class LLMTradingBot:
         self.logger.error("❌ No futures category works")
         return None
     
+# trading_bot_ml.py (fragment z poprawioną funkcją place_bybit_order)
+
     def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
-        """Składa zlecenie futures z pełnym debugowaniem"""
+        """Składa zlecenie futures na Bybit - Z ROZSZERZONYM DEBUGOWANIEM"""
         
-        self.logger.info(f"📦 FUTURES ORDER ATTEMPT: {symbol} {side} Qty: {quantity:.6f}")
+        self.logger.info(f"📦 PLACE_BYBIT_ORDER FUTURES: {symbol} {side} Qty: {quantity}")
         
         if not self.real_trading:
-            self.logger.info(f"🔄 Virtual futures order for {symbol}")
-            return f"virtual_futures_{int(time.time())}"
+            order_id = f"virtual_{int(time.time())}"
+            self.logger.info(f"🔄 Virtual order: {order_id}")
+            return order_id
             
         try:
             endpoint = "/v5/order/create"
             
+            # Formatowanie quantity
             quantity_str = self.format_quantity(symbol, quantity)
+            self.logger.info(f"🔢 Formatted quantity: {quantity_str}")
             
             params = {
                 'category': 'linear',
@@ -478,30 +488,30 @@ class LLMTradingBot:
                 'orderType': 'Market',
                 'qty': quantity_str,
                 'timeInForce': 'GTC',
-                'leverage': str(self.leverage),
-                'settleCoin': 'USDT'
+                'leverage': str(self.leverage)
             }
             
-            self.logger.info(f"🌐 Futures order params: {params}")
+            self.logger.info(f"🌐 Order params: {params}")
+            self.logger.info(f"🔐 Making PRIVATE API request to Bybit...")
             
-            # DODAJ PEŁNE DEBUGOWANIE
-            self.logger.info("🔐 Generating signature for futures order...")
             data = self.bybit_request('POST', endpoint, params, private=True)
             
             if data:
-                self.logger.info(f"📊 Order response: {data}")
+                self.logger.info(f"📊 Full order response: {data}")
                 if 'orderId' in data:
-                    self.logger.info(f"✅ FUTURES ORDER SUCCESS: {data['orderId']}")
+                    self.logger.info(f"✅ Zlecenie złożone: {data['orderId']}")
                     return data['orderId']
                 else:
-                    self.logger.error(f"❌ Futures order failed - no orderId in response")
+                    self.logger.error(f"❌ No orderId in response: {data}")
+                    return None
             else:
-                self.logger.error("❌ Futures order failed - no data returned")
-                
-            return None
+                self.logger.error("❌ No data returned from Bybit API")
+                return None
                 
         except Exception as e:
-            self.logger.error(f"❌ Error placing futures order: {e}")
+            self.logger.error(f"❌ Error placing order: {e}")
+            import traceback
+            self.logger.error(f"❌ Stack trace: {traceback.format_exc()}")
             return None
 
     def analyze_simple_momentum(self, symbol: str) -> float:
