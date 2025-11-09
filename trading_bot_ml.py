@@ -686,6 +686,10 @@ class LLMTradingBot:
         )
         
         self.logger.info(f"   💰 Position calc - Qty: {quantity}, Value: ${position_value:.2f}, Margin: ${margin_required:.2f}")
+
+        # Po obliczeniu quantity, przed sprawdzeniem salda
+        if not self.check_minimum_order(symbol, quantity, current_price):
+            return None
         
         # Sprawdź dostępne saldo
         api_status = self.check_api_status()
