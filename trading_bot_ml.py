@@ -143,26 +143,17 @@ class LLMTradingBot:
         self.logger.info(f"🔗 Real Trading: {self.real_trading}")
 
     def generate_bybit_signature(self, params: Dict, timestamp: str, method: str = "GET") -> str:
-        """Generuje signature dla Bybit API v5 - ZGODNIE Z DOKUMENTACJĄ"""
+        """Generuje signature dla Bybit API v5 - POPRAWIONA"""
         try:
             recv_window = "5000"
             
-            if method.upper() == "GET":
-                # Dla GET: parametry w query string
-                if params:
-                    sorted_params = sorted(params.items())
-                    param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
-                    signature_payload = timestamp + self.api_key + recv_window + param_str
-                else:
-                    signature_payload = timestamp + self.api_key + recv_window
-                    
-            elif method.upper() == "POST":
-                # Dla POST: parametry w JSON string (bez spacji)
-                if params:
-                    param_str = json.dumps(params, separators=(',', ':'))
-                    signature_payload = timestamp + self.api_key + recv_window + param_str
-                else:
-                    signature_payload = timestamp + self.api_key + recv_window
+            # Dla obu metod (GET i POST) używamy query string format
+            if params:
+                # Konwertuj wszystkie wartości do string i posortuj
+                string_params = {str(k): str(v) for k, v in params.items()}
+                sorted_params = sorted(string_params.items())
+                param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
+                signature_payload = timestamp + self.api_key + recv_window + param_str
             else:
                 signature_payload = timestamp + self.api_key + recv_window
             
@@ -182,7 +173,7 @@ class LLMTradingBot:
             return ""
     
     def bybit_request(self, method: str, endpoint: str, params: Dict = None, private: bool = False) -> Optional[Dict]:
-        """Wykonuje request do Bybit API - Z JSON BODY"""
+        """Wykonuje request do Bybit API - POPRAWIONA"""
         if not self.real_trading and private:
             self.logger.warning("⚠️ Tryb wirtualny - pomijam request do Bybit")
             return None
@@ -203,7 +194,7 @@ class LLMTradingBot:
                 'X-BAPI-SIGN': signature,
                 'X-BAPI-TIMESTAMP': timestamp,
                 'X-BAPI-RECV-WINDOW': '5000',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json'  # Nadal używamy JSON content type
             }
         
         try:
@@ -213,9 +204,8 @@ class LLMTradingBot:
             if method.upper() == 'GET':
                 response = requests.get(url, params=params, headers=headers, timeout=10)
             elif method.upper() == 'POST':
-                # Dla POST używamy JSON body (jak w dokumentacji Bybit)
-                self.logger.info("🔄 Using JSON body for POST request")
-                response = requests.post(url, json=params, headers=headers, timeout=10)
+                # Dla POST: parametry w query string, puste body
+                response = requests.post(url, params=params, headers=headers, timeout=10)
             else:
                 self.logger.error(f"❌ Nieobsługiwana metoda HTTP: {method}")
                 return None
@@ -239,7 +229,6 @@ class LLMTradingBot:
         except Exception as e:
             self.logger.error(f"❌ Unexpected error in Bybit request: {e}")
             return None
-            
     def check_api_status(self) -> Dict:
         """Sprawdza status połączenia z Bybit API"""
         status = {
@@ -494,7 +483,7 @@ class LLMTradingBot:
         return quantity, position_value, margin_required
 
     def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
-        """Składa rzeczywiste zlecenie na Bybit - POPRAWIONA WERSJA"""
+        """Składa rzeczywiste zlecenie na Bybit - POPRAWIONA"""
         
         self.logger.info(f"📦 PLACE_BYBIT_ORDER: {symbol} {side} Qty: {quantity:.6f}")
         
@@ -518,8 +507,10 @@ class LLMTradingBot:
                 'leverage': str(self.leverage)
             }
             
-            # Dla market orders nie podajemy ceny
             self.logger.info(f"🌐 Bybit order params: {params}")
+            
+            # Upewnij się, że wszystkie wartości są stringami
+            params = {k: str(v) for k, v in params.items()}
             
             data = self.bybit_request('POST', endpoint, params, private=True)
             
