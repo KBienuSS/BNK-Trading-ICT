@@ -46,7 +46,7 @@ class LLMTradingBot:
 
             # TEST SIGNATURE
         if self.real_trading:
-        self.test_signature()
+            self.test_signature()
         
         # Kapitał wirtualny (fallback)
         self.initial_capital = initial_capital
