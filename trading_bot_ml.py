@@ -504,7 +504,8 @@ class LLMTradingBot:
                 'orderType': 'Market',
                 'qty': quantity_str,
                 'timeInForce': 'GTC',
-                'leverage': str(self.leverage)
+                'leverage': str(self.leverage),
+                'settleCoin': 'USDT'  # DODAJ TEN PARAMETR - WAŻNE!
             }
             
             self.logger.info(f"🌐 Bybit order params: {params}")
@@ -527,7 +528,7 @@ class LLMTradingBot:
 
     def format_quantity(self, symbol: str, quantity: float) -> str:
         """Formatuje ilość zgodnie z wymaganiami Bybit dla każdego symbolu"""
-        # Wymagania lot size dla różnych symboli - sprawdź w dokumentacji Bybit
+        # Wymagania lot size dla różnych symboli
         lot_size_rules = {
             'BTCUSDT': 0.001,   # 0.001 BTC
             'ETHUSDT': 0.01,    # 0.01 ETH  
@@ -574,10 +575,11 @@ class LLMTradingBot:
                 'category': 'linear',
                 'symbol': symbol,
                 'side': close_side,
-                'orderType': 'Market',  # Market order dla szybkiego zamknięcia
+                'orderType': 'Market',
                 'qty': str(round(quantity, 4)),
                 'reduceOnly': True,  # Tylko redukcja pozycji
-                'orderFilter': 'Order'
+                'settleCoin': 'USDT',  # DODAJ TEN PARAMETR
+                'timeInForce': 'GTC'
             }
             
             data = self.bybit_request('POST', endpoint, params, private=True)
@@ -599,7 +601,10 @@ class LLMTradingBot:
             
         try:
             endpoint = "/v5/position/list"
-            params = {'category': 'linear'}
+            params = {
+                'category': 'linear',
+                'settleCoin': 'USDT'  # DODAJ TEN PARAMETR
+            }
             
             data = self.bybit_request('GET', endpoint, params, private=True)
             if data and 'list' in data:
