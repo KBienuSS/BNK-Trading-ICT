@@ -32,7 +32,6 @@ class LLMTradingBot:
         self.api_secret = api_secret or os.getenv('BYBIT_API_SECRET')
         self.base_url = "https://api.bybit.com"
         
-        # Sprawdź czy klucze API są dostępne
         if not self.api_key or not self.api_secret:
             raise Exception("❌ BRAK KLUCZY API BYBIT - wymagane dla real trading")
         
@@ -85,10 +84,7 @@ class LLMTradingBot:
             }
         }
         
-        # AKTYWNY PROFIL
         self.active_profile = 'Claude'
-        
-        # PARAMETRY OPERACYJNE
         self.max_simultaneous_positions = 4
         self.assets = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'DOGEUSDT']
         
@@ -104,7 +100,6 @@ class LLMTradingBot:
             'avg_holding_time': 0
         }
         
-        # DASHBOARD
         self.dashboard_data = {
             'total_fees': 0,
             'net_realized': 0,
@@ -119,7 +114,6 @@ class LLMTradingBot:
         self.logger.info("🧠 LLM-STYLE TRADING BOT - REAL FUTURES TRADING")
         self.logger.info(f"🎯 Active LLM Profile: {self.active_profile}")
         self.logger.info(f"📈 Trading assets: {', '.join(self.assets)}")
-        self.logger.info(f"🔗 Real Trading: {self.real_trading}")
 
     def generate_bybit_signature(self, params: Dict, timestamp: str, recv_window: str = "5000") -> str:
         """Generuje signature dla Bybit API v5"""
@@ -170,7 +164,6 @@ class LLMTradingBot:
             
             self.logger.info(f"🌐 Making {method} request to: {url}")
             
-            start_time = time.time()
             if method.upper() == 'GET':
                 response = requests.get(url, params=params, headers=headers, timeout=10)
             elif method.upper() == 'POST':
@@ -179,14 +172,14 @@ class LLMTradingBot:
                 self.logger.error(f"❌ Nieobsługiwana metoda HTTP: {method}")
                 return None
             
-            response_time = time.time() - start_time
-            self.logger.info(f"📨 Response received in {response_time:.2f}s, status: {response.status_code}")
+            self.logger.info(f"📨 Response status: {response.status_code}")
             
             if not response.text:
                 self.logger.error("❌ Empty response from Bybit API")
                 return None
                 
             response_data = response.json()
+            self.logger.info(f"📄 API Response: {response_data}")
             
             if response_data.get('retCode') != 0:
                 error_msg = response_data.get('retMsg', 'Unknown error')
@@ -199,6 +192,70 @@ class LLMTradingBot:
         except Exception as e:
             self.logger.error(f"❌ Error in Bybit request: {e}")
             return None
+
+    def get_account_balance(self) -> Optional[float]:
+        """Pobiera rzeczywiste saldo konta z Bybit"""
+        try:
+            endpoint = "/v5/account/wallet-balance"
+            params = {'accountType': 'UNIFIED'}
+            
+            self.logger.info("💰 Pobieranie salda konta...")
+            data = self.bybit_request('GET', endpoint, params, private=True)
+            
+            if data and 'list' in data and len(data['list']) > 0:
+                account_info = data['list'][0]
+                total_equity = float(account_info.get('totalEquity', 0))
+                available_balance = float(account_info.get('totalAvailableBalance', 0))
+                
+                self.logger.info(f"✅ Saldo konta: ${total_equity:.2f} (Dostępne: ${available_balance:.2f})")
+                return total_equity
+            else:
+                self.logger.error("❌ Nie udało się pobrać salda konta")
+                return None
+                    
+        except Exception as e:
+            self.logger.error(f"❌ Error getting account balance: {e}")
+            return None
+
+    def get_current_price(self, symbol: str) -> Optional[float]:
+        """Pobiera aktualną cenę futures z Bybit"""
+        try:
+            endpoint = "/v5/market/tickers"
+            params = {
+                'category': 'linear',
+                'symbol': symbol
+            }
+            
+            self.logger.info(f"🔍 Pobieranie ceny dla {symbol}...")
+            data = self.bybit_request('GET', endpoint, params)
+            
+            if data and 'list' in data and len(data['list']) > 0:
+                ticker = data['list'][0]
+                price_str = ticker.get('lastPrice')
+                if price_str:
+                    price = float(price_str)
+                    self.logger.info(f"✅ Cena {symbol}: ${price}")
+                    return price
+                else:
+                    self.logger.error(f"❌ Brak lastPrice w odpowiedzi dla {symbol}")
+            else:
+                self.logger.error(f"❌ Brak danych dla {symbol}")
+            
+            return None
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error getting price for {symbol}: {e}")
+            return None
+
+    def get_all_prices(self) -> Dict[str, float]:
+        """Pobiera ceny wszystkich assetów"""
+        prices = {}
+        for symbol in self.assets:
+            price = self.get_current_price(symbol)
+            if price:
+                prices[symbol] = price
+            time.sleep(0.1)  # Mała przerwa między requestami
+        return prices
 
     def set_leverage(self, symbol: str, leverage: int) -> bool:
         """Ustawia dźwignię dla symbolu"""
@@ -221,52 +278,6 @@ class LLMTradingBot:
         except Exception as e:
             self.logger.error(f"❌ Error setting leverage for {symbol}: {e}")
             return False
-
-    def get_account_balance(self) -> Optional[float]:
-        """Pobiera rzeczywiste saldo konta z Bybit"""
-        try:
-            endpoint = "/v5/account/wallet-balance"
-            params = {'accountType': 'UNIFIED'}
-            
-            data = self.bybit_request('GET', endpoint, params, private=True)
-            if data and 'list' in data and len(data['list']) > 0:
-                total_equity = float(data['list'][0]['totalEquity'])
-                self.logger.info(f"💰 Rzeczywiste saldo konta: ${total_equity:.2f}")
-                return total_equity
-            else:
-                self.logger.error("❌ Nie udało się pobrać salda konta")
-                return None
-                    
-        except Exception as e:
-            self.logger.error(f"❌ Error getting account balance: {e}")
-            return None
-
-    def get_current_price(self, symbol: str) -> Optional[float]:
-        """Pobiera aktualną cenę futures"""
-        try:
-            url = "https://api.bybit.com/v5/market/tickers"
-            params = {
-                'category': 'linear',
-                'symbol': symbol
-            }
-            
-            response = requests.get(url, params=params, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('retCode') == 0:
-                    result = data.get('result', {})
-                    if 'list' in result and len(result['list']) > 0:
-                        price_str = result['list'][0].get('lastPrice')
-                        if price_str:
-                            price = float(price_str)
-                            return price
-            
-            return None
-                
-        except Exception as e:
-            self.logger.error(f"❌ Error getting price for {symbol}: {e}")
-            return None
 
     def format_quantity(self, symbol: str, quantity: float) -> str:
         """Formatuje ilość zgodnie z wymaganiami Bybit"""
@@ -313,6 +324,7 @@ class LLMTradingBot:
                 'leverage': str(self.leverage)
             }
             
+            self.logger.info(f"📦 Składanie zlecenia: {symbol} {side} {quantity_str}")
             data = self.bybit_request('POST', endpoint, params, private=True)
             
             if data and 'orderId' in data:
@@ -342,7 +354,9 @@ class LLMTradingBot:
                 'timeInForce': 'GTC'
             }
             
+            self.logger.info(f"🔄 Zamykanie pozycji: {symbol} {side}")
             data = self.bybit_request('POST', endpoint, params, private=True)
+            
             if data and 'orderId' in data:
                 self.logger.info(f"✅ Pozycja zamknięta: {symbol} - ID: {data['orderId']}")
                 return True
@@ -360,20 +374,25 @@ class LLMTradingBot:
             endpoint = "/v5/position/list"
             params = {'category': 'linear'}
             
+            self.logger.info("📊 Pobieranie aktywnych pozycji...")
             data = self.bybit_request('GET', endpoint, params, private=True)
+            
             if data and 'list' in data:
                 active_positions = []
                 for pos in data['list']:
-                    if float(pos['size']) > 0:
+                    size = float(pos.get('size', 0))
+                    if size > 0:
                         active_positions.append({
                             'symbol': pos['symbol'],
                             'side': 'LONG' if pos['side'] == 'Buy' else 'SHORT',
-                            'size': float(pos['size']),
-                            'entry_price': float(pos['avgPrice']),
-                            'leverage': float(pos['leverage']),
-                            'unrealised_pnl': float(pos['unrealisedPnl']),
-                            'liq_price': float(pos['liqPrice']) if pos['liqPrice'] else None
+                            'size': size,
+                            'entry_price': float(pos.get('avgPrice', 0)),
+                            'leverage': float(pos.get('leverage', 1)),
+                            'unrealised_pnl': float(pos.get('unrealisedPnl', 0)),
+                            'liq_price': float(pos['liqPrice']) if pos.get('liqPrice') else None
                         })
+                
+                self.logger.info(f"✅ Znaleziono {len(active_positions)} aktywnych pozycji")
                 return active_positions
             return []
             
@@ -390,7 +409,7 @@ class LLMTradingBot:
             # Aktualizuj nasze pozycje na podstawie danych z Bybit
             self.positions = {}
             for i, pos in enumerate(bybit_positions):
-                position_id = f"bybit_{i}"
+                position_id = f"bybit_{i}_{int(time.time())}"
                 self.positions[position_id] = {
                     'symbol': pos['symbol'],
                     'side': pos['side'],
@@ -400,7 +419,8 @@ class LLMTradingBot:
                     'unrealized_pnl': pos['unrealised_pnl'],
                     'status': 'ACTIVE',
                     'entry_time': datetime.now(),
-                    'real_trading': True
+                    'real_trading': True,
+                    'liq_price': pos['liq_price']
                 }
             
             self.logger.info(f"🔄 Zsynchronizowano z Bybit - Pozycje: {len(bybit_positions)}")
@@ -408,16 +428,52 @@ class LLMTradingBot:
         except Exception as e:
             self.logger.error(f"❌ Error syncing with Bybit: {e}")
 
-    def analyze_simple_momentum(self, symbol: str) -> float:
-        """Analiza momentum na podstawie danych z Bybit"""
+    def check_api_connection(self) -> Dict:
+        """Sprawdza połączenie z API Bybit"""
+        status = {
+            'api_connected': False,
+            'balance_available': False,
+            'prices_available': False,
+            'message': '',
+            'balance': 0,
+            'prices': {}
+        }
+        
         try:
-            current_price = self.get_current_price(symbol)
-            if not current_price:
-                return random.uniform(-0.02, 0.02)
+            # Sprawdź saldo
+            balance = self.get_account_balance()
+            if balance is not None:
+                status['balance_available'] = True
+                status['balance'] = balance
+                status['api_connected'] = True
+                status['message'] += f'✅ Saldo: ${balance:.2f} | '
+            else:
+                status['message'] += '❌ Brak salda | '
             
-            # Symulacja prostego momentum (w prawdziwym bocie użyj prawdziwych danych historycznych)
+            # Sprawdź ceny
+            prices = self.get_all_prices()
+            if prices:
+                status['prices_available'] = True
+                status['prices'] = prices
+                status['message'] += f'✅ Ceny: {len(prices)} assetów | '
+            else:
+                status['message'] += '❌ Brak cen | '
+            
+            # Sprawdź pozycje
+            positions = self.get_bybit_positions()
+            status['message'] += f'📊 Pozycje: {len(positions)}'
+            
+        except Exception as e:
+            status['message'] = f'❌ Błąd połączenia: {str(e)}'
+        
+        return status
+
+    def analyze_simple_momentum(self, symbol: str) -> float:
+        """Analiza momentum"""
+        try:
+            # W prawdziwym handlu tutaj byłaby prawdziwa analiza
+            # Na razie symulacja
             return random.uniform(-0.03, 0.03)
-            
         except Exception as e:
             self.logger.error(f"❌ Error analyzing momentum for {symbol}: {e}")
             return random.uniform(-0.02, 0.02)
@@ -429,7 +485,6 @@ class LLMTradingBot:
         momentum = self.analyze_simple_momentum(symbol)
         base_confidence = profile['confidence_bias']
         
-        # Final confidence z losowością
         final_confidence = min(base_confidence + random.uniform(-0.1, 0.1), 0.95)
         final_confidence = max(final_confidence, 0.1)
         
@@ -488,43 +543,23 @@ class LLMTradingBot:
         
         if confidence > 0.7:
             if side == "LONG":
-                take_profit = entry_price * 1.018
-                stop_loss = entry_price * 0.992
+                take_profit = entry_price * 1.015
+                stop_loss = entry_price * 0.99
             else:
-                take_profit = entry_price * 0.982
-                stop_loss = entry_price * 1.008
-        elif confidence > 0.5:
-            if side == "LONG":
-                take_profit = entry_price * 1.012
-                stop_loss = entry_price * 0.994
-            else:
-                take_profit = entry_price * 0.988
-                stop_loss = entry_price * 1.006
+                take_profit = entry_price * 0.985
+                stop_loss = entry_price * 1.01
         else:
             if side == "LONG":
-                take_profit = entry_price * 1.008
-                stop_loss = entry_price * 0.996
+                take_profit = entry_price * 1.01
+                stop_loss = entry_price * 0.995
             else:
-                take_profit = entry_price * 0.992
-                stop_loss = entry_price * 1.004
-        
-        risk_multiplier = {
-            'LOW': 0.8,
-            'MEDIUM': 1.0,
-            'HIGH': 1.2
-        }.get(profile['risk_appetite'], 1.0)
-        
-        if side == "LONG":
-            take_profit = entry_price + (take_profit - entry_price) * risk_multiplier
-            stop_loss = entry_price - (entry_price - stop_loss) * risk_multiplier
-        else:
-            take_profit = entry_price - (entry_price - take_profit) * risk_multiplier
-            stop_loss = entry_price + (stop_loss - entry_price) * risk_multiplier
+                take_profit = entry_price * 0.99
+                stop_loss = entry_price * 1.005
         
         return {
             'take_profit': round(take_profit, 4),
             'stop_loss': round(stop_loss, 4),
-            'max_holding_hours': random.randint(1, 6)
+            'max_holding_hours': random.randint(2, 8)
         }
 
     def open_llm_position(self, symbol: str):
@@ -554,7 +589,7 @@ class LLMTradingBot:
             
             # 5. Sprawdź minimalną wielkość zlecenia
             min_order_value = quantity * current_price
-            if min_order_value < 5:  # Minimalne $5 dla Bybit
+            if min_order_value < 5:
                 self.logger.warning(f"❌ Order value too small: ${min_order_value:.2f} < $5")
                 return None
             
@@ -592,10 +627,8 @@ class LLMTradingBot:
             else:
                 self.stats['short_trades'] += 1
             
-            # Logowanie sukcesu
             self.logger.info(f"🎉 REAL POSITION OPENED: {symbol} {signal} @ ${current_price:.4f}")
             self.logger.info(f"   📊 Size: ${position_value:.2f} | Margin: ${margin_required:.2f}")
-            self.logger.info(f"   🎯 TP: {exit_plan['take_profit']:.4f} | SL: {exit_plan['stop_loss']:.4f}")
             
             return position_id
             
@@ -709,7 +742,6 @@ class LLMTradingBot:
         
         position['status'] = 'CLOSED'
         
-        margin_return = pnl_pct * self.leverage * 100
         pnl_color = "🟢" if realized_pnl_after_fee > 0 else "🔴"
         self.logger.info(f"{pnl_color} REAL POSITION CLOSED: {position['symbol']} {position['side']} - P&L: ${realized_pnl_after_fee:+.2f} - Reason: {exit_reason}")
 
@@ -729,6 +761,10 @@ class LLMTradingBot:
     def run_llm_trading_strategy(self):
         """Główna pętla strategii LLM"""
         self.logger.info("🚀 STARTING REAL FUTURES TRADING STRATEGY")
+        
+        # Sprawdź połączenie na starcie
+        api_status = self.check_api_connection()
+        self.logger.info(f"🔗 Status połączenia: {api_status['message']}")
         
         iteration = 0
         while self.is_running:
@@ -755,7 +791,7 @@ class LLMTradingBot:
                         if symbol not in active_symbols:
                             position_id = self.open_llm_position(symbol)
                             if position_id:
-                                time.sleep(2)  # Przerwa między zleceniami
+                                time.sleep(2)
                 
                 self.logger.info(f"📊 Active Positions: {active_count}/{self.max_simultaneous_positions}")
                 
@@ -782,6 +818,9 @@ class LLMTradingBot:
 
     def get_dashboard_data(self):
         """Przygotowuje dane dla dashboardu"""
+        # Sprawdź połączenie z API
+        api_status = self.check_api_connection()
+        
         # Pobierz saldo konta
         account_balance = self.get_account_balance()
         
@@ -833,6 +872,7 @@ class LLMTradingBot:
         win_rate = (self.stats['winning_trades'] / total_trades * 100) if total_trades > 0 else 0
         
         return {
+            'api_status': api_status,
             'account_summary': {
                 'total_balance': round(account_balance, 2) if account_balance else 0,
                 'unrealized_pnl': round(total_unrealized_pnl, 2),
@@ -857,3 +897,67 @@ class LLMTradingBot:
             'recent_trades': recent_trades,
             'last_update': datetime.now().isoformat()
         }
+
+# Flask app do dashboardu
+app = Flask(__name__)
+CORS(app)
+
+# Globalna instancja bota
+bot = None
+
+@app.route('/')
+def dashboard():
+    return render_template('dashboard.html')
+
+@app.route('/api/status')
+def api_status():
+    if not bot:
+        return jsonify({'error': 'Bot not initialized'})
+    
+    data = bot.get_dashboard_data()
+    return jsonify(data)
+
+@app.route('/api/start', methods=['POST'])
+def start_trading():
+    global bot
+    if not bot:
+        return jsonify({'error': 'Bot not initialized'})
+    
+    bot.start_trading()
+    return jsonify({'status': 'started'})
+
+@app.route('/api/stop', methods=['POST'])
+def stop_trading():
+    global bot
+    if not bot:
+        return jsonify({'error': 'Bot not initialized'})
+    
+    bot.stop_trading()
+    return jsonify({'status': 'stopped'})
+
+@app.route('/api/profile', methods=['POST'])
+def change_profile():
+    global bot
+    if not bot:
+        return jsonify({'error': 'Bot not initialized'})
+    
+    profile = request.json.get('profile')
+    if bot.set_active_profile(profile):
+        return jsonify({'status': 'profile_changed', 'profile': profile})
+    else:
+        return jsonify({'error': 'Invalid profile'})
+
+def initialize_bot():
+    global bot
+    try:
+        bot = LLMTradingBot()
+        return True
+    except Exception as e:
+        logging.error(f"❌ Failed to initialize bot: {e}")
+        return False
+
+if __name__ == "__main__":
+    if initialize_bot():
+        app.run(host='0.0.0.0', port=5000, debug=True)
+    else:
+        print("❌ Failed to initialize trading bot. Check your API keys.")
