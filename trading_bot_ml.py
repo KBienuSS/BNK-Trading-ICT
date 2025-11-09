@@ -142,30 +142,30 @@ class LLMTradingBot:
         self.logger.info(f"📈 Trading assets: {', '.join(self.assets)}")
         self.logger.info(f"🔗 Real Trading: {self.real_trading}")
 
-        def set_leverage(self, symbol: str, leverage: int, category: str = 'linear') -> bool:
-            """Ustawia dźwignię dla symbolu"""
-            if not self.real_trading:
+    def set_leverage(self, symbol: str, leverage: int, category: str = 'linear') -> bool:
+        """Ustawia dźwignię dla symbolu"""
+        if not self.real_trading:
+            return True
+            
+        try:
+            endpoint = "/v5/position/set-leverage"
+            params = {
+                'category': category,
+                'symbol': symbol,
+                'buyLeverage': str(leverage),
+                'sellLeverage': str(leverage)
+            }
+            
+            data = self.bybit_request('POST', endpoint, params, private=True)
+            if data:
+                self.logger.info(f"✅ Ustawiono dźwignię {leverage}x dla {symbol}")
                 return True
-                
-            try:
-                endpoint = "/v5/position/set-leverage"
-                params = {
-                    'category': category,
-                    'symbol': symbol,
-                    'buyLeverage': str(leverage),
-                    'sellLeverage': str(leverage)
-                }
-                
-                data = self.bybit_request('POST', endpoint, params, private=True)
-                if data:
-                    self.logger.info(f"✅ Ustawiono dźwignię {leverage}x dla {symbol}")
-                    return True
-                else:
-                    self.logger.error(f"❌ Błąd ustawiania dźwigni dla {symbol}")
-                    return False
-            except Exception as e:
-                self.logger.error(f"❌ Error setting leverage for {symbol}: {e}")
+            else:
+                self.logger.error(f"❌ Błąd ustawiania dźwigni dla {symbol}")
                 return False
+        except Exception as e:
+            self.logger.error(f"❌ Error setting leverage for {symbol}: {e}")
+            return False
             
     def check_available_categories(self):
         """Sprawdza dostępne kategorie dla konta"""
