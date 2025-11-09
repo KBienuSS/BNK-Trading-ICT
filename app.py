@@ -192,6 +192,35 @@ def debug_conditions():
     
     return jsonify(results)
 
+@app.route('/api/debug-position-size/<symbol>')
+def debug_position_size(symbol):
+    """Debuguje kalkulację wielkości pozycji"""
+    if not llm_trading_bot:
+        return jsonify({'error': 'Bot not initialized'})
+    
+    current_price = llm_trading_bot.get_current_price(symbol)
+    if not current_price:
+        return jsonify({'error': f'Could not get price for {symbol}'})
+    
+    quantity, position_value, margin_required = llm_trading_bot.calculate_position_size(
+        symbol, current_price, 0.95
+    )
+    
+    api_status = llm_trading_bot.check_api_status()
+    available_balance = api_status['balance'] if api_status['balance_available'] else llm_trading_bot.virtual_balance
+    
+    return jsonify({
+        'symbol': symbol,
+        'current_price': current_price,
+        'quantity': quantity,
+        'position_value': position_value,
+        'margin_required': margin_required,
+        'available_balance': available_balance,
+        'sufficient_balance': margin_required <= available_balance,
+        'min_order_value': quantity * current_price,
+        'min_order_met': (quantity * current_price) >= 5
+    })
+
 @app.route('/api/force-open-position/<symbol>', methods=['POST'])
 def force_open_position(symbol):
     """Wymusza otwarcie pozycji dla testów"""
@@ -279,7 +308,7 @@ def force_open_position(symbol):
     except Exception as e:
         llm_trading_bot.logger.error(f"💥 Error in force-open-position: {e}")
         return jsonify({'error': str(e)}), 500
-
+        
 def run_bot():
     """Run the trading bot in a separate thread"""
     global llm_trading_bot  # Zmieniam na llm_trading_bot
