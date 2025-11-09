@@ -465,21 +465,32 @@ class LLMTradingBot:
 # trading_bot_ml.py (fragment z poprawioną funkcją place_bybit_order)
 
     def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
-        """Składa zlecenie futures na Bybit - Z ROZSZERZONYM DEBUGOWANIEM"""
+        """Składa zlecenie futures na Bybit - POPRAWIONA WERSJA"""
         
-        self.logger.info(f"📦 PLACE_BYBIT_ORDER FUTURES: {symbol} {side} Qty: {quantity}")
+        self.logger.info(f"🚀📦 PLACE_BYBIT_ORDER CALLED: {symbol} {side} Qty: {quantity:.6f} Price: ${price}")
         
         if not self.real_trading:
             order_id = f"virtual_{int(time.time())}"
-            self.logger.info(f"🔄 Virtual order: {order_id}")
+            self.logger.info(f"🔄 Virtual order created: {order_id}")
             return order_id
             
         try:
+            # SPRAWDŹ CZY MAMY WYSTARCZAJĄCE SALDO
+            api_status = self.check_api_status()
+            if not api_status['balance_available']:
+                self.logger.error("❌ No available balance for real trading")
+                return None
+            
             endpoint = "/v5/order/create"
             
             # Formatowanie quantity
             quantity_str = self.format_quantity(symbol, quantity)
-            self.logger.info(f"🔢 Formatted quantity: {quantity_str}")
+            self.logger.info(f"🔢 Formatted quantity for {symbol}: {quantity_str}")
+            
+            # Ustaw dźwignię PRZED złożeniem zlecenia
+            if not self.set_leverage(symbol, self.leverage):
+                self.logger.error(f"❌ Failed to set leverage for {symbol}")
+                return None
             
             params = {
                 'category': 'linear',
@@ -491,16 +502,17 @@ class LLMTradingBot:
                 'leverage': str(self.leverage)
             }
             
-            self.logger.info(f"🌐 Order params: {params}")
-            self.logger.info(f"🔐 Making PRIVATE API request to Bybit...")
+            self.logger.info(f"🌐 Sending order to Bybit: {params}")
             
+            # Wywołanie API
             data = self.bybit_request('POST', endpoint, params, private=True)
             
             if data:
-                self.logger.info(f"📊 Full order response: {data}")
+                self.logger.info(f"📊 Bybit response: {data}")
                 if 'orderId' in data:
-                    self.logger.info(f"✅ Zlecenie złożone: {data['orderId']}")
-                    return data['orderId']
+                    order_id = data['orderId']
+                    self.logger.info(f"✅ ORDER SUCCESS: {symbol} {side} - ID: {order_id}")
+                    return order_id
                 else:
                     self.logger.error(f"❌ No orderId in response: {data}")
                     return None
@@ -509,9 +521,9 @@ class LLMTradingBot:
                 return None
                 
         except Exception as e:
-            self.logger.error(f"❌ Error placing order: {e}")
+            self.logger.error(f"💥 CRITICAL ERROR in place_bybit_order: {e}")
             import traceback
-            self.logger.error(f"❌ Stack trace: {traceback.format_exc()}")
+            self.logger.error(f"💥 Stack trace: {traceback.format_exc()}")
             return None
 
     def analyze_simple_momentum(self, symbol: str) -> float:
@@ -922,7 +934,7 @@ class LLMTradingBot:
         return True
     
     def open_llm_position(self, symbol: str):
-        """Otwiera pozycję w stylu LLM używając rzeczywistych cen z Bybit API"""
+        """Otwiera pozycję w stylu LLM - POPRAWIONA WERSJA"""
         
         self.logger.info(f"🔍🔄 OPEN_LLM_POSITION CALLED for {symbol}")
         
@@ -974,23 +986,16 @@ class LLMTradingBot:
                 return None
             
             self.logger.info(f"✅ ALL CHECKS PASSED - ATTEMPTING TO OPEN POSITION")
-
-            if not self.set_leverage(symbol, self.leverage):
-                self.logger.error(f"❌ Nie udało się ustawić dźwigni dla {symbol}")
-                return None
-                            
-            # 7. SKŁADANIE ZLECENIA NA BYBIT
-            self.logger.info(f"🚀 Calling place_bybit_order for {symbol}")
+    
+            # 7. SKŁADANIE ZLECENIA NA BYBIT - DODANE WYWOŁANIE
+            self.logger.info(f"🚀 ATTEMPTING REAL ORDER PLACEMENT...")
             order_id = self.place_bybit_order(symbol, signal, quantity, current_price)
             
-            self.logger.info(f"📨 Order ID from Bybit: {order_id}")
-            
             if not order_id:
-                if self.real_trading:
-                    self.logger.error(f"❌ Failed to place order on Bybit for {symbol}")
-                else:
-                    self.logger.error(f"❌ Failed to create virtual order for {symbol}")
+                self.logger.error(f"❌ FAILED: Could not place order for {symbol}")
                 return None
+            
+            self.logger.info(f"📨 Order ID received: {order_id}")
             
             # 8. Tworzenie rekordu pozycji
             self.logger.info(f"📝 Creating position record for {symbol}")
@@ -1042,6 +1047,7 @@ class LLMTradingBot:
             self.logger.info(f"   📊 Confidence: {confidence:.1%} | Size: ${position_value:.2f}")
             self.logger.info(f"   🎯 TP: {exit_plan['take_profit']:.4f} ({tp_distance:+.2f}%)")
             self.logger.info(f"   🛑 SL: {exit_plan['stop_loss']:.4f} ({sl_distance:+.2f}%)")
+            self.logger.info(f"   📋 Order ID: {order_id}")
             
             return position_id
             
