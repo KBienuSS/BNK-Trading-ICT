@@ -118,6 +118,34 @@ def change_profile():
     except Exception as e:
         return jsonify({'status': f'Error changing profile: {str(e)}'})
 
+@app.route('/api/debug-api')
+def debug_api():
+    """Debuguje połączenie API"""
+    if not llm_trading_bot:
+        return jsonify({'error': 'Bot not initialized'})
+    
+    try:
+        # Sprawdź dostępne kategorie
+        categories = llm_trading_bot.check_available_categories()
+        
+        # Sprawdź ceny dla wszystkich symboli
+        price_check = {}
+        for symbol in llm_trading_bot.assets:
+            price = llm_trading_bot.get_current_price(symbol)
+            price_check[symbol] = price if price else "NO PRICE"
+        
+        # Sprawdź status API
+        api_status = llm_trading_bot.check_api_status()
+        
+        return jsonify({
+            'api_status': api_status,
+            'price_check': price_check,
+            'categories_available': categories
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)})
+        
 @app.route('/api/force-update')
 def force_update():
     try:
