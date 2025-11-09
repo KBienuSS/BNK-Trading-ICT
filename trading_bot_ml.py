@@ -35,6 +35,9 @@ logging.basicConfig(
 
 class LLMTradingBot:
     def __init__(self, api_key=None, api_secret=None, initial_capital=10000, leverage=10):
+        # Inicjalizacja loggera NAJPIERW
+        self.logger = logging.getLogger(__name__)
+        
         # Konfiguracja Bybit API
         self.api_key = api_key or os.getenv('BYBIT_API_KEY')
         self.api_secret = api_secret or os.getenv('BYBIT_API_SECRET')
@@ -46,28 +49,11 @@ class LLMTradingBot:
         
         # Sprawdź czy klucze API są dostępne
         if not self.api_key or not self.api_secret:
-            logging.warning("⚠️ Brak kluczy API Bybit - bot będzie działał w trybie wirtualnym")
+            self.logger.warning("⚠️ Brak kluczy API Bybit - bot będzie działał w trybie wirtualnym")
             self.real_trading = False
         else:
             self.real_trading = True
-            logging.info("🔑 Klucze API Bybit załadowane - REAL TRADING ENABLED")
-        
-        # Inicjalizacja sesji HTTP dla pybit
-        self.session = None
-        if self.real_trading and PYBIT_AVAILABLE:
-            try:
-                self.session = HTTP(
-                    testnet=self.testnet,
-                    api_key=self.api_key,
-                    api_secret=self.api_secret,
-                )
-                self.logger.info("✅ Sesja HTTP pybit zainicjalizowana")
-            except Exception as e:
-                self.logger.error(f"❌ Błąd inicjalizacji sesji pybit: {e}")
-                self.session = None
-        else:
-            if self.real_trading:
-                self.logger.warning("⚠️ Pybit nie jest dostępny, używane będą ręczne żądania API (mogą nie działać)")
+            self.logger.info("🔑 Klucze API Bybit załadowane - REAL TRADING ENABLED")
         
         # Kapitał wirtualny (fallback)
         self.initial_capital = initial_capital
@@ -78,8 +64,6 @@ class LLMTradingBot:
         self.trade_history = []
         self.is_running = False
         self.position_id = 0
-        
-        self.logger = logging.getLogger(__name__)
         
         # Cache cen
         self.price_cache = {}
@@ -160,6 +144,20 @@ class LLMTradingBot:
             'labels': [],
             'values': []
         }
+        
+        # Inicjalizacja sesji HTTP dla pybit
+        self.session = None
+        if self.real_trading and PYBIT_AVAILABLE:
+            try:
+                self.session = HTTP(
+                    testnet=self.testnet,
+                    api_key=self.api_key,
+                    api_secret=self.api_secret,
+                )
+                self.logger.info("✅ Sesja HTTP pybit zainicjalizowana")
+            except Exception as e:
+                self.logger.error(f"❌ Błąd inicjalizacji sesji pybit: {e}")
+                self.session = None
         
         self.logger.info("🧠 LLM-STYLE TRADING BOT - Alpha Arena Inspired")
         self.logger.info(f"💰 Initial capital: ${initial_capital} | Leverage: {leverage}x")
