@@ -143,15 +143,23 @@ class LLMTradingBot:
         self.logger.info(f"🔗 Real Trading: {self.real_trading}")
 
     def generate_bybit_signature(self, params: Dict, timestamp: str) -> str:
-        """Generuje signature dla Bybit API"""
-        param_str = timestamp + self.api_key + "5000"
+        """Generuje signature dla Bybit API v5"""
+        # Dla requestów GET: timestamp + api_key + recv_window + params
+        # Dla requestów POST: timestamp + api_key + recv_window + json_params
+        
+        recv_window = "5000"
+        
         if params:
+            # Posortuj parametry alfabetycznie
             sorted_params = sorted(params.items())
-            param_str += "&".join([f"{k}={v}" for k, v in sorted_params])
+            param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
+            signature_payload = timestamp + self.api_key + recv_window + param_str
+        else:
+            signature_payload = timestamp + self.api_key + recv_window
         
         signature = hmac.new(
             bytes(self.api_secret, "utf-8"),
-            param_str.encode("utf-8"),
+            signature_payload.encode("utf-8"),
             hashlib.sha256
         ).hexdigest()
         
@@ -178,13 +186,18 @@ class LLMTradingBot:
             }
         
         try:
+            self.logger.info(f"🌐 Bybit Request: {method} {url}")
+            
             if method.upper() == 'GET':
                 response = requests.get(url, params=params, headers=headers, timeout=10)
             elif method.upper() == 'POST':
+                # Dla POST, parametry są w body, nie w query string
                 response = requests.post(url, json=params, headers=headers, timeout=10)
             else:
                 self.logger.error(f"❌ Nieobsługiwana metoda HTTP: {method}")
                 return None
+            
+            self.logger.info(f"📨 Response status: {response.status_code}")
             
             response.raise_for_status()
             data = response.json()
