@@ -338,6 +338,26 @@ class LLMTradingBot:
             self.logger.error(f"❌ Error analyzing momentum for {symbol}: {e}")
             return random.uniform(-0.02, 0.02)
 
+    def check_minimum_order(self, symbol: str, quantity: float, price: float) -> bool:
+        """Sprawdza minimalne wymagania zlecenia dla symbolu"""
+        min_order_values = {
+            'BTCUSDT': 5,      # $1
+            'ETHUSDT': 5,      # $1  
+            'SOLUSDT': 5,      # $1
+            'XRPUSDT': 5,      # $1
+            'BNBUSDT': 5,     
+            'DOGEUSDT': 5,     # $1
+        }
+        
+        min_value = min_order_values.get(symbol, 1)
+        order_value = quantity * price
+        
+        if order_value < min_value:
+            self.logger.warning(f"❌ Order value too small for {symbol}. Required: ${min_value}, Actual: ${order_value:.2f}")
+            return False
+        
+        return True
+
     def check_volume_activity(self, symbol: str) -> bool:
         """Sprawdza aktywność wolumenu na podstawie zmienności cen z Bybit API"""
         try:
