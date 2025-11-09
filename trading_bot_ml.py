@@ -608,21 +608,33 @@ class LLMTradingBot:
 
     def open_llm_position(self, symbol: str):
         """Otwiera pozycję w stylu LLM używając rzeczywistych cen z Bybit API"""
+        
+        self.logger.info(f"🔍 DEBUG ENTRY CHECK for {symbol}")
+        
         if not self.should_enter_trade():
+            self.logger.info(f"   ❌ Profile frequency check failed")
             return None
             
         current_price = self.get_current_price(symbol)
         if not current_price:
-            self.logger.warning(f"❌ Could not get price for {symbol} - skipping trade")
             return None
             
         signal, confidence = self.generate_llm_signal(symbol)
+        self.logger.info(f"   🎯 Signal: {signal}, Confidence: {confidence:.1%}")
+        
         if signal == "HOLD" or confidence < 0.3:
+            self.logger.info(f"   ❌ Signal is HOLD or confidence too low")
             return None
             
         active_positions = sum(1 for p in self.positions.values() if p['status'] == 'ACTIVE')
+        self.logger.info(f"   📊 Active Positions: {active_positions}/{self.max_simultaneous_positions}")
+        
         if active_positions >= self.max_simultaneous_positions:
+            self.logger.info(f"   ❌ Max positions reached")
             return None
+        
+        self.logger.info(f"   ✅ ALL CONDITIONS MET - OPENING POSITION")
+        # Reszta kodu...
             
         quantity, position_value, margin_required = self.calculate_position_size(
             symbol, current_price, confidence
