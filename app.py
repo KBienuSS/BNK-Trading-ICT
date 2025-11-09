@@ -104,6 +104,31 @@ def stop_bot():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/test-order', methods=['POST'])
+def test_order():
+    """Endpoint do bezpośredniego testowania składania zleceń"""
+    symbol = "BTCUSDT"
+    
+    # Testowe parametry
+    test_quantity = 0.001  # Minimalna ilość BTC
+    test_price = 104000.0
+    test_side = "LONG"
+    
+    bot.logger.info("🧪 TEST ORDER - Starting direct API test")
+    
+    # 1. Test pobierania ceny
+    price = bot.get_current_price(symbol)
+    if not price:
+        return jsonify({"status": "failed", "message": "Could not get price"})
+    
+    # 2. Test składania zlecenia
+    order_id = bot.place_bybit_order(symbol, test_side, test_quantity, price)
+    
+    if order_id:
+        return jsonify({"status": "success", "order_id": order_id})
+    else:
+        return jsonify({"status": "failed", "message": "Order placement failed"})
+
 @app.route('/api/change-profile', methods=['POST'])
 def change_profile():
     """Nowy endpoint do zmiany profilu LLM"""
