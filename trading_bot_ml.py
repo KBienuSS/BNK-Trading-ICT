@@ -157,10 +157,11 @@ class LLMTradingBot:
                     signature_payload = timestamp + self.api_key + recv_window
                     
             elif method.upper() == "POST":
-                # Dla POST: parametry muszą być w formacie query string, nie JSON
+                # Dla POST: parametry muszą być w formacie query string (klucz=wartość)
                 if params:
-                    # Konwertuj parametry do formatu query string (klucz=wartość)
-                    sorted_params = sorted(params.items())
+                    # Konwertuj wszystkie wartości do string
+                    string_params = {k: str(v) for k, v in params.items()}
+                    sorted_params = sorted(string_params.items())
                     param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
                     signature_payload = timestamp + self.api_key + recv_window + param_str
                 else:
@@ -184,7 +185,7 @@ class LLMTradingBot:
             return ""
 
     def bybit_request(self, method: str, endpoint: str, params: Dict = None, private: bool = False) -> Optional[Dict]:
-        """Wykonuje request do Bybit API"""
+        """Wykonuje request do Bybit API - POPRAWIONA WERSJA"""
         if not self.real_trading and private:
             self.logger.warning("⚠️ Tryb wirtualny - pomijam request do Bybit")
             return None
@@ -210,18 +211,18 @@ class LLMTradingBot:
         
         try:
             self.logger.info(f"🌐 Bybit Request: {method} {url}")
+            self.logger.info(f"📦 Request params: {params}")
             
             if method.upper() == 'GET':
                 response = requests.get(url, params=params, headers=headers, timeout=10)
             elif method.upper() == 'POST':
+                # Dla POST wysyłamy params jako JSON
                 response = requests.post(url, json=params, headers=headers, timeout=10)
             else:
                 self.logger.error(f"❌ Nieobsługiwana metoda HTTP: {method}")
                 return None
             
             self.logger.info(f"📨 Response status: {response.status_code}")
-            
-            # Log pełnej odpowiedzi dla debugowania
             response_text = response.text
             self.logger.info(f"📄 Response: {response_text}")
             
@@ -540,25 +541,34 @@ class LLMTradingBot:
 
     def format_quantity(self, symbol: str, quantity: float) -> str:
         """Formatuje ilość zgodnie z wymaganiami Bybit dla każdego symbolu"""
-        # Wymagania lot size dla różnych symboli
+        # Wymagania lot size dla różnych symboli - sprawdź w dokumentacji Bybit
         lot_size_rules = {
-            'BTCUSDT': 0.001,  # 0.001 BTC
-            'ETHUSDT': 0.01,   # 0.01 ETH
-            'SOLUSDT': 0.01,   # 0.01 SOL
-            'XRPUSDT': 1,      # 1 XRP
-            'BNBUSDT': 0.001,  # 0.001 BNB
-            'DOGEUSDT': 1,     # 1 DOGE
+            'BTCUSDT': 0.001,   # 0.001 BTC
+            'ETHUSDT': 0.01,    # 0.01 ETH  
+            'SOLUSDT': 0.01,    # 0.01 SOL
+            'XRPUSDT': 1,       # 1 XRP
+            'BNBUSDT': 0.001,   # 0.001 BNB
+            'DOGEUSDT': 1,      # 1 DOGE
         }
         
         lot_size = lot_size_rules.get(symbol, 0.001)
+        
+        # Zaokrąglij do najbliższej wielokrotności lot size
         formatted_quantity = round(quantity / lot_size) * lot_size
         
-        # Zaokrąglij do odpowiedniej liczby miejsc po przecinku
+        # Formatuj do odpowiedniej liczby miejsc po przecinku
         if lot_size >= 1:
             formatted_quantity = int(formatted_quantity)
+        elif lot_size == 0.001:
+            formatted_quantity = round(formatted_quantity, 3)
+        elif lot_size == 0.01:
+            formatted_quantity = round(formatted_quantity, 2)
         else:
-            decimals = len(str(lot_size).split('.')[1])
-            formatted_quantity = round(formatted_quantity, decimals)
+            formatted_quantity = round(formatted_quantity, 6)
+        
+        # Upewnij się, że nie jest zerowe
+        if formatted_quantity <= 0:
+            formatted_quantity = lot_size
         
         return str(formatted_quantity)
 
