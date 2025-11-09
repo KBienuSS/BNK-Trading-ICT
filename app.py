@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timedelta
 import random
 import requests
+import os
 from dotenv import load_dotenv  # Dodaj tę linię
 
 # Załaduj zmienne środowiskowe z pliku .env
