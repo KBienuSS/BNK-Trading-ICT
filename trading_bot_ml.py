@@ -1377,14 +1377,19 @@ class LLMTradingBot:
         return self.chart_data
 
     def run_llm_trading_strategy(self):
-        """Główna pętla strategii LLM używająca rzeczywistych cen z Bybit API"""
-        self.logger.info("🚀 STARTING LLM-STYLE TRADING STRATEGY")
-        self.logger.info(f"🎯 Active Profile: {self.active_profile}")
-        self.logger.info(f"🔗 Real Trading: {self.real_trading}")
+        """Główna pętla strategii LLM"""
+        self.logger.info("🚀 STARTING LLM TRADING STRATEGY")
         
-        # Sprawdź status API na starcie
-        api_status = self.check_api_status()
-        self.logger.info(f"📊 API Status: {api_status['message']}")
+        # NAJPIERW PRZETESTOJ API
+        self.logger.info("🔧 RUNNING API TESTS...")
+        api_ok = self.debug_api_connection()
+        
+        if not api_ok:
+            self.logger.error("❌ API TESTS FAILED - stopping bot")
+            self.is_running = False
+            return
+        
+        self.logger.info("✅ API TESTS PASSED - starting trading")
         
         iteration = 0
         while self.is_running:
