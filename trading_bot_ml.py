@@ -718,14 +718,16 @@ class LLMTradingBot:
         self.logger.info(f"   ✅ ALL CHECKS PASSED - ATTEMPTING TO OPEN POSITION")
         
         # SKŁADANIE ZLECENIA NA BYBIT
+        # SKŁADANIE ZLECENIA NA BYBIT
         order_id = self.place_bybit_order(symbol, signal, quantity, current_price)
         
-        self.logger.info(f"   📨 Order ID from Bybit: {order_id}")
+        self.logger.info(f"    📨 Order ID from Bybit: {order_id}")
         
         if not order_id and self.real_trading:
-            self.logger.error(f"   ❌ Failed to place order on Bybit for {symbol}")
+            self.logger.error(f"    ❌ Failed to place order on Bybit for {symbol}")
             return None
             
+        # RESZTA KODU TWORZENIA POZYCJI...
         exit_plan = self.calculate_llm_exit_plan(current_price, confidence, signal)
         
         if signal == "LONG":
