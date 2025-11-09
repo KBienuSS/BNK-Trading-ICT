@@ -606,6 +606,23 @@ class LLMTradingBot:
         
         return random.random() < frequency_chance
 
+    def check_minimum_balance(self, symbol: str, price: float) -> bool:
+        """Sprawdza czy saldo jest wystarczające dla danego assetu"""
+        # Minimalna wartość pozycji (przykładowo $10)
+        min_position_value = 10
+        
+        # Sprawdź czy można otworzyć minimalną pozycję
+        min_margin = min_position_value / self.leverage
+        
+        api_status = self.check_api_status()
+        available_balance = api_status['balance'] if api_status['balance_available'] else self.virtual_balance
+        
+        if available_balance < min_margin:
+            self.logger.warning(f"💰 Insufficient balance for {symbol}. Available: ${available_balance:.2f}, Required: ${min_margin:.2f}")
+            return False
+        
+        return True
+    
     def open_llm_position(self, symbol: str):
         """Otwiera pozycję w stylu LLM używając rzeczywistych cen z Bybit API"""
         
