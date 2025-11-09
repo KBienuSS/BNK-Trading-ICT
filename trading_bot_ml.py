@@ -609,7 +609,7 @@ class LLMTradingBot:
     def check_minimum_balance(self, symbol: str, price: float) -> bool:
         """Sprawdza czy saldo jest wystarczające dla danego assetu"""
         # Minimalna wartość pozycji (przykładowo $10)
-        min_position_value = 10
+        min_position_value = 5
         
         # Sprawdź czy można otworzyć minimalną pozycję
         min_margin = min_position_value / self.leverage
