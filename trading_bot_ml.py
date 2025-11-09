@@ -188,13 +188,12 @@ class LLMTradingBot:
         self.logger.info(f"📊 Available categories: {available_categories}")
         return available_categories
 
-    def generate_bybit_signature(self, params: Dict, timestamp: str, recv_window: str = "5000") -> str:
-        """Generuje signature dla Bybit API v5 - POPRAWIONA WERSJA"""
+    def generate_bybit_signature(self, params: Dict, timestamp: str, recv_window: str = "5000", method: str = "GET") -> str:
+        """Generuje signature dla Bybit API v5 - POPRAWIONA DLA POST"""
         try:
-            # Dla POST requestów, parametry są w body, więc nie wchodzą do signature payload
+            # Dla POST requestów, parametry muszą być w query string format dla signature
             signature_payload = timestamp + self.api_key + recv_window
             
-            # TYLKO dla GET requestów dodajemy parametry do signature
             if params:
                 # Konwertuj wszystkie wartości do string i posortuj
                 string_params = {str(k): str(v) for k, v in params.items()}
@@ -218,26 +217,16 @@ class LLMTradingBot:
             return ""
     
     def bybit_request(self, method: str, endpoint: str, params: Dict = None, private: bool = False) -> Optional[Dict]:
-        """Wykonuje request do Bybit API - POPRAWIONE PODPISYWANIE"""
+        """Wykonuje request do Bybit API - UPROSZCZONA WERSJA"""
         url = f"{self.base_url}{endpoint}"
-        headers = {}
         
         try:
             if private:
                 timestamp = str(int(time.time() * 1000))
                 recv_window = "5000"
                 
-                # POPRAWIONE: Dla POST - signature BEZ parametrów (są w body)
-                # Dla GET - signature Z parametrami (są w URL)
-                if method.upper() == 'GET' and params:
-                    signature_payload = timestamp + self.api_key + recv_window
-                    sorted_params = sorted(params.items())
-                    param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
-                    signature_payload += param_str
-                else:
-                    # Dla POST: signature bez parametrów
-                    signature_payload = timestamp + self.api_key + recv_window
-                
+                # PROSTA WERSJA: signature bez parametrów dla POST
+                signature_payload = timestamp + self.api_key + recv_window
                 signature = hmac.new(
                     bytes(self.api_secret, "utf-8"),
                     signature_payload.encode("utf-8"),
@@ -251,6 +240,8 @@ class LLMTradingBot:
                     'X-BAPI-RECV-WINDOW': recv_window,
                     'Content-Type': 'application/json'
                 }
+            else:
+                headers = {}
     
             # Wykonaj request
             self.logger.info(f"🌐 Making {method} request to: {url}")
@@ -262,28 +253,21 @@ class LLMTradingBot:
             else:
                 return None
             
-            # Sprawdź odpowiedź
             self.logger.info(f"📨 Response status: {response.status_code}")
             
             if response.status_code != 200:
-                self.logger.error(f"❌ HTTP Error: {response.status_code}")
-                self.logger.error(f"❌ Response text: {response.text}")
                 return None
                 
             response_data = response.json()
-            self.logger.info(f"📄 API Response: {response_data}")
             
             if response_data.get('retCode') != 0:
-                error_msg = response_data.get('retMsg', 'Unknown error')
-                self.logger.error(f"❌ Bybit API Error: {error_msg}")
+                self.logger.error(f"❌ Bybit API Error: {response_data.get('retMsg')}")
                 return None
                 
             return response_data.get('result', {})
             
         except Exception as e:
             self.logger.error(f"❌ Request error: {e}")
-            import traceback
-            self.logger.error(f"❌ Stack trace: {traceback.format_exc()}")
             return None
             
     def check_api_status(self) -> Dict:
