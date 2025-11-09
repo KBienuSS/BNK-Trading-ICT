@@ -192,6 +192,28 @@ def debug_conditions():
     
     return jsonify(results)
 
+@app.route('/api/force-open-position/<symbol>', methods=['POST'])
+def force_open_position(symbol):
+    """Wymusza otwarcie pozycji dla testów"""
+    if not llm_trading_bot:
+        return jsonify({'error': 'Bot not initialized'})
+    
+    try:
+        position_id = llm_trading_bot.open_llm_position(symbol)
+        if position_id:
+            return jsonify({
+                'status': 'success',
+                'position_id': position_id,
+                'message': f'Position opened for {symbol}'
+            })
+        else:
+            return jsonify({
+                'status': 'failed', 
+                'message': f'Could not open position for {symbol}'
+            })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 def run_bot():
     """Run the trading bot in a separate thread"""
     global llm_trading_bot  # Zmieniam na llm_trading_bot
