@@ -162,6 +162,36 @@ def save_chart_data():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/debug-conditions')
+def debug_conditions():
+    """Debuguje warunki wejścia"""
+    if not llm_trading_bot:
+        return jsonify({'error': 'Bot not initialized'})
+    
+    results = {}
+    for symbol in llm_trading_bot.assets:
+        current_price = llm_trading_bot.get_current_price(symbol)
+        signal, confidence = llm_trading_bot.generate_llm_signal(symbol)
+        should_enter = llm_trading_bot.should_enter_trade()
+        active_count = sum(1 for p in llm_trading_bot.positions.values() if p['status'] == 'ACTIVE')
+        
+        results[symbol] = {
+            'price': current_price,
+            'signal': signal,
+            'confidence': confidence,
+            'should_enter': should_enter,
+            'active_positions': active_count,
+            'max_positions': llm_trading_bot.max_simultaneous_positions,
+            'can_enter': (
+                should_enter and 
+                signal != "HOLD" and 
+                confidence >= 0.3 and
+                active_count < llm_trading_bot.max_simultaneous_positions
+            )
+        }
+    
+    return jsonify(results)
+
 def run_bot():
     """Run the trading bot in a separate thread"""
     global llm_trading_bot  # Zmieniam na llm_trading_bot
