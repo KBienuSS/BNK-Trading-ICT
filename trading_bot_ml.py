@@ -493,7 +493,7 @@ class LLMTradingBot:
             # Ustaw dźwignię PRZED złożeniem zlecenia
             self.logger.info(f"🎚️ Setting leverage {self.leverage}x for {symbol}")
             leverage_set = self.set_leverage(symbol, self.leverage)
-            self.logger.info(f"🔧 Leverage set result: {leverag e_set}")
+            self.logger.info(f"🔧 Leverage set result: {leverage_set}")
             
             # ✅ DODAJ WIĘCEJ PARAMETRÓW WYMAGANYCH PRZEZ BYBIT
             params = {
