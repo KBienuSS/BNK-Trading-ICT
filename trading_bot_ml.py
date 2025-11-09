@@ -43,10 +43,6 @@ class LLMTradingBot:
         else:
             self.real_trading = True
             logging.info("🔑 Klucze API Bybit załadowane - REAL TRADING ENABLED")
-
-            # TEST SIGNATURE
-        if self.real_trading:
-            self.test_signature()
         
         # Kapitał wirtualny (fallback)
         self.initial_capital = initial_capital
@@ -157,7 +153,7 @@ class LLMTradingBot:
                 param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
                 signature_payload = timestamp + self.api_key + recv_window + param_str
             elif method.upper() == "POST" and params:
-                # Dla POST: RAW JSON string - TO JEST KLUCZOWA ZMIANA!
+                # Dla POST: parametry w JSON body
                 param_str = json.dumps(params, separators=(',', ':'))
                 signature_payload = timestamp + self.api_key + recv_window + param_str
             else:
@@ -491,9 +487,9 @@ class LLMTradingBot:
         return quantity, position_value, margin_required
 
     def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
-        """Składa rzeczywiste zlecenie na Bybit - POPRAWIONA"""
+        """Składa rzeczywiste zlecenie na Bybit"""
         
-        self.logger.info(f"📦 PLACE_BYBIT_ORDER: {symbol} {side} Qty: {quantity:.6f}")
+        self.logger.info(f"📦 PLACE_BYBIT_ORDER: {symbol} {side} Qty: {quantity:.6f} Price: ${price}")
         
         if not self.real_trading:
             self.logger.info(f"🔄 Tryb wirtualny - symulacja zlecenia {side} dla {symbol}")
@@ -502,22 +498,20 @@ class LLMTradingBot:
         try:
             endpoint = "/v5/order/create"
             
-            # Format quantity jako string z 4 miejscami po przecinku
-            qty_str = f"{quantity:.4f}"
-            
             params = {
                 'category': 'linear',
                 'symbol': symbol,
                 'side': 'Buy' if side == 'LONG' else 'Sell',
-                'orderType': 'Market',  # Market order - nie potrzebuje ceny
-                'qty': qty_str,
+                'orderType': 'Market',
+                'qty': str(round(quantity, 4)),
+                'price': str(price),
                 'timeInForce': 'GTC',
-                'leverage': str(self.leverage)
+                'leverage': str(self.leverage),
+                'orderFilter': 'Order'
             }
             
-            self.logger.info(f"🌐 Bybit POST params: {params}")
+            self.logger.info(f"🌐 Bybit order params: {params}")
             
-            # Upewnij się, że wysyłasz jako JSON
             data = self.bybit_request('POST', endpoint, params, private=True)
             
             if data and 'orderId' in data:
@@ -1132,59 +1126,6 @@ class LLMTradingBot:
     def load_chart_data(self) -> Dict:
         """Ładuje dane wykresu"""
         return self.chart_data
-
-    def debug_signature(self, params: Dict, timestamp: str, method: str = "GET"):
-        """Funkcja do debugowania signature"""
-        recv_window = "5000"
-        
-        if method.upper() == "POST" and params:
-            # Test różnych formatów
-            format1 = json.dumps(params, separators=(',', ':'))
-            format2 = json.dumps(params)
-            
-            print("=== DEBUG SIGNATURE ===")
-            print(f"Params: {params}")
-            print(f"Format1 (compact): {format1}")
-            print(f"Format2 (pretty): {format2}")
-            print(f"Are equal: {format1 == format2}")
-            
-            payload1 = timestamp + self.api_key + recv_window + format1
-            payload2 = timestamp + self.api_key + recv_window + format2
-            
-            signature1 = hmac.new(
-                bytes(self.api_secret, "utf-8"),
-                payload1.encode("utf-8"),
-                hashlib.sha256
-            ).hexdigest()
-            
-            signature2 = hmac.new(
-                bytes(self.api_secret, "utf-8"),
-                payload2.encode("utf-8"),
-                hashlib.sha256
-            ).hexdigest()
-            
-            print(f"Signature1: {signature1}")
-            print(f"Signature2: {signature2}")
-            print(f"Signatures equal: {signature1 == signature2}")
-            print("======================")
-            
-            return signature1
-
-    # Dodaj tymczasowy test
-    def test_signature(self):
-        """Test signature generation"""
-        test_params = {
-            'category': 'linear',
-            'symbol': 'BTCUSDT', 
-            'side': 'Buy',
-            'orderType': 'Market',
-            'qty': '0.001',
-            'timeInForce': 'GTC'
-        }
-        
-        timestamp = str(int(time.time() * 1000))
-        signature = self.generate_bybit_signature(test_params, timestamp, "POST")
-        print(f"Test signature: {signature}")
 
     def run_llm_trading_strategy(self):
         """Główna pętla strategii LLM używająca rzeczywistych cen z Bybit API"""
