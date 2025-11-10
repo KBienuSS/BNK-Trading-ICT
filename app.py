@@ -484,6 +484,33 @@ def force_open_position(symbol):
         app.logger.error(f"💥 Stack trace: {traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/test-api-connection')
+def test_api_connection():
+    """Testuje połączenie z API Bybit"""
+    try:
+        if not llm_trading_bot:
+            return jsonify({'error': 'Bot not initialized'}), 500
+        
+        api_test = llm_trading_bot.test_bybit_api_connection()
+        return jsonify(api_test)
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+        
+@app.route('/api/debug-all-positions')
+def debug_all_positions():
+    """Debuguje WSZYSTKIE pozycje na koncie Bybit"""
+    try:
+        if not llm_trading_bot:
+            return jsonify({'error': 'Bot not initialized'}), 500
+        
+        debug_info = llm_trading_bot.get_all_bybit_positions_debug()
+        return jsonify(debug_info)
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+        
+
 def run_bot():
     """Run the trading bot in a separate thread"""
     global llm_trading_bot
