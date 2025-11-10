@@ -106,7 +106,7 @@ class LLMTradingBot:
         }
         
         # AKTYWNY PROFIL
-        self.active_profile = 'Claude'
+        self.active_profile = 'Qwen'
         
         # PARAMETRY OPERACYJNE
         self.max_simultaneous_positions = 4
@@ -1324,7 +1324,7 @@ class LLMTradingBot:
                 status['api_connected'] = True
                 status['balance_available'] = True
                 status['balance'] = balance
-                status['message'] = f'✅ Połączono z Bybit - Saldo: ${balance:.2f}'
+                status['message'] = '✅'
             else:
                 status['api_connected'] = False
                 status['message'] = '❌ Błąd połączenia z Bybit - sprawdź klucze API'
