@@ -199,60 +199,49 @@ class LLMTradingBot:
             self.logger.error(f"❌ Error setting leverage for {symbol}: {e}")
             return False
 
-    def get_binance_price(self, symbol: str) -> Optional[float]:
-        """Pobiera aktualną cenę z API Binance - JEDYNE ŹRÓDŁO CEN (jak w drugim bocie)"""
+    def get_current_price(self, symbol: str) -> Optional[float]:
+        """Pobiera cenę futures TYLKO przez PUBLIC API - bez autoryzacji (ORIGINAL)"""
         try:
-            url = "https://api.binance.com/api/v3/ticker/price"
-            params = {'symbol': symbol}
-            
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            
-            data = response.json()
-            price = float(data['price'])
-            
-            # Zapisz w cache
-            self.price_cache[symbol] = {
-                'price': price,
-                'timestamp': datetime.now()
+            url = "https://api.bybit.com/v5/market/tickers"
+            params = {
+                'category': 'linear',
+                'symbol': symbol
             }
             
-            # Zapisz w historii dla analizy
-            if symbol not in self.price_history:
-                self.price_history[symbol] = []
+            response = requests.get(url, params=params, timeout=10)
             
-            self.price_history[symbol].append({
-                'price': price,
-                'timestamp': datetime.now()
-            })
-            
-            # Ogranicz historię do ostatnich 50 punktów
-            if len(self.price_history[symbol]) > 50:
-                self.price_history[symbol] = self.price_history[symbol][-50:]
-            
-            return price
-            
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"❌ API Error getting price for {symbol}: {e}")
-            # Tylko cache jako fallback - BRAK STAŁYCH CEN
-            if symbol in self.price_cache:
-                cache_age = (datetime.now() - self.price_cache[symbol]['timestamp']).total_seconds()
-                if cache_age < 300:  # 5 minut
-                    self.logger.info(f"🔄 Using cached price for {symbol} (age: {cache_age:.1f}s)")
-                    return self.price_cache[symbol]['price']
-            
-            self.logger.warning(f"⚠️ Could not get price for {symbol} and no recent cache")
+            if response.status_code == 200:
+                data = response.json()
+                
+                if data.get('retCode') == 0:
+                    result = data.get('result', {})
+                    if 'list' in result and len(result['list']) > 0:
+                        price_str = result['list'][0].get('lastPrice')
+                        if price_str:
+                            price = float(price_str)
+                            
+                            # Zapisz w historii dla analizy
+                            if symbol not in self.price_history:
+                                self.price_history[symbol] = []
+                            
+                            self.price_history[symbol].append({
+                                'price': price,
+                                'timestamp': datetime.now()
+                            })
+                            
+                            # Ogranicz historię do ostatnich 50 punktów
+                            if len(self.price_history[symbol]) > 50:
+                                self.price_history[symbol] = self.price_history[symbol][-50:]
+                            
+                            return price
             return None
+                
         except Exception as e:
-            self.logger.error(f"❌ Unexpected error getting price for {symbol}: {e}")
+            self.logger.error(f"❌ Error getting PUBLIC futures price for {symbol}: {e}")
             return None
-
-    def get_current_price(self, symbol: str) -> Optional[float]:
-        """Pobiera aktualną cenę - WYŁĄCZNIE Z API BINANCE (jak w drugim bocie)"""
-        return self.get_binance_price(symbol)
 
     def analyze_simple_momentum(self, symbol: str) -> float:
-        """Analiza momentum na podstawie rzeczywistych danych z API Binance (jak w drugim bocie)"""
+        """Analiza momentum na podstawie rzeczywistych danych z Bybit API (jak w drugim bocie)"""
         try:
             # Użyj historii cen do obliczenia momentum
             if symbol not in self.price_history or len(self.price_history[symbol]) < 2:
@@ -277,7 +266,7 @@ class LLMTradingBot:
             return random.uniform(-0.02, 0.02)
 
     def check_volume_activity(self, symbol: str) -> bool:
-        """Sprawdza aktywność wolumenu na podstawie zmienności cen z API Binance (jak w drugim bocie)"""
+        """Sprawdza aktywność wolumenu na podstawie zmienności cen z Bybit API (jak w drugim bocie)"""
         try:
             if symbol not in self.price_history or len(self.price_history[symbol]) < 10:
                 return random.random() < 0.6
@@ -294,7 +283,7 @@ class LLMTradingBot:
             return random.random() < 0.6
 
     def generate_llm_signal(self, symbol: str) -> Tuple[str, float]:
-        """Generuje sygnał w stylu LLM na podstawie rzeczywistych danych z API Binance (jak w drugim bocie)"""
+        """Generuje sygnał w stylu LLM na podstawie rzeczywistych danych (jak w drugim bocie)"""
         profile = self.get_current_profile()
         
         # Podstawowe obserwacje na podstawie rzeczywistych cen
@@ -690,7 +679,7 @@ class LLMTradingBot:
         trading_mode = "REAL" if position.get('real_trading', False) else "VIRTUAL"
         self.logger.info(f"{pnl_color} {trading_mode} CLOSE: {position['symbol']} {position['side']} - P&L: ${realized_pnl_after_fee:+.2f} ({margin_return:+.1f}% margin) - Reason: {exit_reason}")
 
-    # Pozostałe metody Bybit (niezmienione, ale dostosowane do nowej logiki)
+    # POZOSTAŁE METODY BYBIT API (ORIGINAL - PRZYWRÓCONE)
     def get_account_balance(self) -> Optional[float]:
         """Pobiera rzeczywiste saldo konta z Bybit używając pybit"""
         if not self.real_trading:
@@ -707,8 +696,10 @@ class LLMTradingBot:
             
             if response['retCode'] == 0:
                 total_equity = float(response['result']['list'][0]['totalEquity'])
+                self.logger.info(f"💰 Rzeczywiste saldo konta z Bybit: ${total_equity:.2f}")
                 return total_equity
             else:
+                self.logger.warning("⚠️ Nie udało się pobrać salda konta z Bybit")
                 return None
                     
         except Exception as e:
@@ -717,21 +708,26 @@ class LLMTradingBot:
 
     def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
         """Składa zlecenie futures na Bybit używając pybit"""
+        
+        self.logger.info(f"🚀 PLACE_BYBIT_ORDER: {symbol} {side} Qty: {quantity:.6f}")
+        
         if not self.real_trading:
-            return f"virtual_{int(time.time())}"
+            order_id = f"virtual_{int(time.time())}"
+            self.logger.info(f"🔄 Virtual order: {order_id}")
+            return order_id
             
         if not self.session:
             self.logger.error("❌ Brak sesji pybit")
             return None
             
         try:
-            # Ustaw dźwignię
+            # 1. Ustaw dźwignię
             self.set_leverage(symbol, self.leverage)
     
-            # Formatowanie quantity
+            # 2. Formatowanie quantity
             quantity_str = self.format_quantity(symbol, quantity)
             
-            # Złóż zlecenie
+            # 3. Złóż zlecenie
             response = self.session.place_order(
                 category="linear",
                 symbol=symbol,
@@ -752,11 +748,14 @@ class LLMTradingBot:
                 
         except Exception as e:
             self.logger.error(f"💥 CRITICAL ERROR in place_bybit_order: {e}")
+            import traceback
+            self.logger.error(f"💥 Stack trace: {traceback.format_exc()}")
             return None
 
     def close_bybit_position(self, symbol: str, side: str, quantity: float) -> bool:
         """Zamyka pozycję na Bybit używając pybit"""
         if not self.real_trading:
+            self.logger.info(f"🔄 Tryb wirtualny - symulacja zamknięcia pozycji {symbol}")
             return True
             
         if not self.session:
@@ -774,11 +773,11 @@ class LLMTradingBot:
                 orderType="Market",
                 qty=quantity_str,
                 timeInForce="GTC",
-                reduceOnly=True,
+                reduceOnly=True,  # Ważne: tylko redukcja istniejącej pozycji
             )
             
             if response['retCode'] == 0:
-                self.logger.info(f"✅ Pozycja zamknięta na Bybit: {symbol}")
+                self.logger.info(f"✅ Pozycja zamknięta na Bybit: {symbol} - ID: {response['result']['orderId']}")
                 return True
             else:
                 error_msg = response.get('retMsg', 'Unknown error')
@@ -791,6 +790,7 @@ class LLMTradingBot:
 
     def format_quantity(self, symbol: str, quantity: float) -> str:
         """Formatuje ilość zgodnie z wymaganiami Bybit dla każdego symbolu"""
+        # Wymagania lot size dla różnych symboli
         lot_size_rules = {
             'BTCUSDT': 0.001,   # 0.001 BTC
             'ETHUSDT': 0.01,    # 0.01 ETH  
@@ -801,8 +801,11 @@ class LLMTradingBot:
         }
         
         lot_size = lot_size_rules.get(symbol, 0.001)
+        
+        # Zaokrąglij do najbliższej wielokrotności lot size
         formatted_quantity = round(quantity / lot_size) * lot_size
         
+        # Formatuj do odpowiedniej liczby miejsc po przecinku
         if lot_size >= 1:
             formatted_quantity = int(formatted_quantity)
         elif lot_size == 0.001:
@@ -812,10 +815,101 @@ class LLMTradingBot:
         else:
             formatted_quantity = round(formatted_quantity, 6)
         
+        # Upewnij się, że nie jest zerowe
         if formatted_quantity <= 0:
             formatted_quantity = lot_size
         
         return str(formatted_quantity)
+
+    def get_bybit_positions(self) -> List[Dict]:
+        """Pobiera aktywne pozycje z Bybit używając pybit"""
+        if not self.real_trading:
+            self.logger.info("🔄 Virtual mode - no Bybit positions")
+            return []
+            
+        if not self.session:
+            self.logger.error("❌ Brak sesji pybit")
+            return []
+    
+        try:
+            self.logger.info("🔍 Fetching positions from Bybit...")
+            
+            response = self.session.get_positions(
+                category="linear",
+                symbol=""  # Pobierz wszystkie pozycje
+            )
+            
+            self.logger.info(f"📨 Bybit API Response Code: {response['retCode']}")
+            self.logger.info(f"📨 Bybit API Message: {response.get('retMsg', 'No message')}")
+            
+            if response['retCode'] == 0:
+                active_positions = []
+                result_list = response['result'].get('list', [])
+                self.logger.info(f"📊 Found {len(result_list)} position entries in response")
+                
+                for i, pos in enumerate(result_list):
+                    size = float(pos['size'])
+                    symbol = pos['symbol']
+                    side = 'LONG' if pos['side'] == 'Buy' else 'SHORT'
+                    
+                    self.logger.info(f"  📍 Entry {i}: {symbol} {side} - Size: {size}")
+                    
+                    if size > 0:  # Tylko pozycje z wielkością > 0
+                        # Konwertuj timestamp na datetime
+                        created_time = datetime.fromtimestamp(int(pos['createdTime']) / 1000) if pos.get('createdTime') else datetime.now()
+                        
+                        position_data = {
+                            'symbol': symbol,
+                            'side': side,
+                            'size': size,
+                            'entry_price': float(pos['avgPrice']),
+                            'leverage': float(pos['leverage']),
+                            'unrealised_pnl': float(pos['unrealisedPnl']),
+                            'liq_price': float(pos['liqPrice']) if pos['liqPrice'] and pos['liqPrice'] != '' else None,
+                            'position_value': float(pos['positionValue']),
+                            'position_margin': float(pos['positionIM']),
+                            'created_time': created_time,
+                            'mark_price': float(pos['markPrice']) if pos.get('markPrice') else float(pos['avgPrice'])
+                        }
+                        
+                        active_positions.append(position_data)
+                        self.logger.info(f"  ✅ ADDED: {symbol} {side} Size: {size}, Entry: ${position_data['entry_price']}")
+                    else:
+                        self.logger.info(f"  ❌ SKIPPED: {symbol} {side} - Zero size: {size}")
+                
+                self.logger.info(f"✅ Final: {len(active_positions)} active positions on Bybit")
+                return active_positions
+            else:
+                error_msg = response.get('retMsg', 'Unknown error')
+                self.logger.error(f"❌ Błąd pobierania pozycji z Bybit: {error_msg}")
+                return []
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error getting Bybit positions: {e}")
+            import traceback
+            self.logger.error(f"❌ Stack trace: {traceback.format_exc()}")
+            return []
+
+    def sync_with_bybit(self):
+        """Synchronizuje stan z rzeczywistymi pozycjami na Bybit"""
+        if not self.real_trading:
+            return
+            
+        try:
+            # Pobierz aktywne pozycje z Bybit
+            bybit_positions = self.get_bybit_positions()
+            
+            # Aktualizuj saldo konta
+            real_balance = self.get_account_balance()
+            if real_balance:
+                self.virtual_balance = real_balance
+                self.virtual_capital = real_balance
+            
+            # Log synchronizacji
+            self.logger.info(f"🔄 Zsynchronizowano z Bybit - Pozycje: {len(bybit_positions)}, Saldo: ${real_balance:.2f}")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error syncing with Bybit: {e}")
 
     def get_portfolio_diversity(self) -> float:
         """Oblicza dywersyfikację portfela (jak w drugim bocie)"""
@@ -851,7 +945,7 @@ class LLMTradingBot:
         return False
 
     def get_dashboard_data(self):
-        """Przygotowuje dane dla dashboardu używając rzeczywistych cen z API (jak w drugim bocie)"""
+        """Przygotowuje dane dla dashboardu używając rzeczywistych cen z API"""
         active_positions = []
         total_unrealized_pnl = 0
         
@@ -1131,5 +1225,5 @@ if __name__ == '__main__':
     print("📍 Dashboard available at: http://localhost:5000")
     print("🧠 LLM Profiles: Claude, Gemini, GPT, Qwen")
     print("📈 Trading assets: BTC, ETH, SOL, XRP, BNB, DOGE")
-    print("💹 Using REAL-TIME prices from Binance API only")
+    print("💹 Using REAL-TIME prices from Bybit API")
     app.run(debug=True, host='0.0.0.0', port=5000)
