@@ -125,6 +125,7 @@ class LLMTradingBot:
         self.assets = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'DOGEUSDT']
         
         # STATYSTYKI
+        # STATYSTYKI - dodaj brakujące pola
         self.stats = {
             'total_trades': 0,
             'winning_trades': 0,
@@ -134,7 +135,9 @@ class LLMTradingBot:
             'long_trades': 0,
             'short_trades': 0,
             'avg_holding_time': 0,
-            'portfolio_utilization': 0
+            'portfolio_utilization': 0,
+            'won_long_trades': 0,  # DODANE
+            'won_short_trades': 0   # DODANE
         }
         
         # DASHBOARD
@@ -1263,7 +1266,7 @@ class LLMTradingBot:
         active_positions = []
         
         for pos in bybit_positions:
-            current_price = pos.get('mark_price', self.get_current_price(pos['symbol']))
+            current_price = pos.get('mark_price') or self.get_current_price(pos['symbol'])
             if not current_price:
                 continue
                 
@@ -1293,9 +1296,7 @@ class LLMTradingBot:
                 'exit_plan': exit_plan,
                 'tp_distance_pct': round(tp_distance_pct, 2),
                 'sl_distance_pct': round(sl_distance_pct, 2),
-                'real_trading': True,
-                'liq_price': pos['liq_price'],
-                'position_value': pos['position_value']
+                'real_trading': True
             })
         
         self.logger.info(f"📊 Pobrano {len(active_positions)} aktywnych pozycji z Bybit")
@@ -1303,13 +1304,17 @@ class LLMTradingBot:
 
     def get_dashboard_data(self):
         """Przygotowuje dane dla dashboardu używając rzeczywistych danych z Bybit"""
+        self.logger.info("🔄 Generating dashboard data...")
         # Sprawdź status API i pobierz saldo
         api_status = self.check_api_status()
         
         # Pobierz unrealized P&L bezpośrednio z Bybit dla real trading
         total_unrealized_pnl = self.get_bybit_unrealized_pnl()
         self.dashboard_data['unrealized_pnl'] = total_unrealized_pnl
-        
+
+        if self.real_trading:
+            self.debug_bybit_positions()
+
         # Pobierz aktywne pozycje bezpośrednio z Bybit dla real trading
         if self.real_trading:
             active_positions = self.get_active_positions_from_bybit()
@@ -1322,6 +1327,7 @@ class LLMTradingBot:
                     if not current_price:
                         continue
                     
+                    # Oblicz unrealized P&L dla pozycji wirtualnej
                     if position['side'] == 'LONG':
                         pnl_pct = (current_price - position['entry_price']) / position['entry_price']
                         unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
@@ -1356,7 +1362,6 @@ class LLMTradingBot:
                         'real_trading': position.get('real_trading', False)
                     })
         
-        # Reszta metody pozostaje bez zmian...
         # Oblicz confidence levels dla każdego assetu
         confidence_levels = {}
         for symbol in self.assets:
@@ -1374,6 +1379,7 @@ class LLMTradingBot:
                 'side': trade['side'],
                 'entry_price': trade['entry_price'],
                 'exit_price': trade['exit_price'],
+                'quantity': trade['quantity'],
                 'realized_pnl': trade['realized_pnl'],
                 'exit_reason': trade['exit_reason'],
                 'llm_profile': trade['llm_profile'],
@@ -1394,11 +1400,15 @@ class LLMTradingBot:
             total_return_pct = ((current_balance + total_unrealized_pnl - self.initial_capital) / self.initial_capital) * 100
         else:
             total_return_pct = 0
+            
+        self.logger.info(f"📊 Dashboard data - Positions: {len(active_positions)}, Trades: {len(recent_trades)}, Unrealized P&L: ${total_unrealized_pnl:.2f}")    
         
+        # DODAJ BRAKUJĄCE POLA DLA HTML
         return {
             'account_summary': {
                 'total_value': round(current_balance + total_unrealized_pnl, 2) if current_balance else 0,
                 'available_cash': round(current_balance, 2) if current_balance else 0,
+                'total_fees': round(self.stats.get('total_fees', 0), 2),  # DODANE
                 'net_realized': round(self.dashboard_data['net_realized'], 2),
                 'unrealized_pnl': round(total_unrealized_pnl, 2),
                 'real_trading': self.real_trading,
@@ -1413,7 +1423,10 @@ class LLMTradingBot:
                 'avg_holding_hours': round(self.stats['avg_holding_time'], 2),
                 'portfolio_utilization': round(self.stats['portfolio_utilization'] * 100, 1),
                 'portfolio_diversity': round(self.get_portfolio_diversity() * 100, 1),
-                'avg_confidence': round(self.dashboard_data['average_confidence'] * 100, 1)
+                'avg_confidence': round(self.dashboard_data['average_confidence'] * 100, 1),
+                # DODANE POLA DLA HTML
+                'won_long_trades': self.stats.get('won_long_trades', 0),
+                'won_short_trades': self.stats.get('won_short_trades', 0)
             },
             'llm_config': {
                 'active_profile': self.active_profile,
@@ -1426,7 +1439,7 @@ class LLMTradingBot:
             },
             'api_status': api_status,
             'confidence_levels': confidence_levels,
-            'active_positions': active_positions,
+            'active_positions': active_positions,  # To powinno być już poprawne
             'recent_trades': recent_trades,
             'total_unrealized_pnl': total_unrealized_pnl,
             'last_update': datetime.now().isoformat()
@@ -1441,6 +1454,15 @@ class LLMTradingBot:
             self.logger.error(f"❌ Error saving chart data: {e}")
             return False
 
+    def debug_bybit_positions(self):
+        """Debugowanie pozycji na Bybit"""
+        self.logger.info("🔍 DEBUG: Checking Bybit positions...")
+        positions = self.get_bybit_positions()
+        self.logger.info(f"🔍 DEBUG: Found {len(positions)} positions on Bybit:")
+        for pos in positions:
+            self.logger.info(f"  - {pos['symbol']} {pos['side']} Size: {pos['size']} Entry: ${pos['entry_price']}")
+        return positions
+        
     def load_chart_data(self) -> Dict:
         """Ładuje dane wykresu"""
         return self.chart_data
