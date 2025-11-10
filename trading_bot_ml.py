@@ -1324,7 +1324,6 @@ class LLMTradingBot:
                 status['api_connected'] = True
                 status['balance_available'] = True
                 status['balance'] = balance
-                status['message'] = '✅'
             else:
                 status['api_connected'] = False
                 status['message'] = '❌ Błąd połączenia z Bybit - sprawdź klucze API'
