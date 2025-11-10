@@ -78,70 +78,22 @@ def get_bot_status():
 
 @app.route('/api/start-bot', methods=['POST'])
 def start_bot():
+    global bot_status, llm_trading_bot  # Zmieniam na llm_trading_bot
     try:
-        global trading_bot
-        
-        if not request.is_json:
-            return jsonify({
-                'status': 'error',
-                'message': 'Content-Type must be application/json'
-            }), 415
+        if bot_status != "running":
+            # Start LLM bot
+            llm_trading_bot = LLMTradingBot()  # Używamy LLMTradingBot
             
-        data = request.get_json()
-        
-        # Zatrzymaj istniejącego bota jeśli działa
-        if trading_bot and hasattr(trading_bot, 'is_running') and trading_bot.is_running:
-            trading_bot.stop_trading()
-            time.sleep(2)  # Czekaj na bezpieczne zamknięcie
+            bot_thread = threading.Thread(target=run_bot)
+            bot_thread.daemon = True
+            bot_thread.start()
             
-        # Pobierz dane z requesta
-        api_key = data.get('api_key', '')
-        api_secret = data.get('api_secret', '')
-        real_trading = data.get('real_trading', False)
-        initial_capital = data.get('initial_capital', 10000)
-        leverage = data.get('leverage', 10)
-        
-        # Walidacja dla real trading
-        if real_trading and (not api_key or not api_secret):
-            return jsonify({
-                'status': 'error',
-                'message': 'API key and secret required for real trading'
-            }), 400
-        
-        # Utwórz nowego bota
-        trading_bot = LLMTradingBot(
-            api_key=api_key,
-            api_secret=api_secret,
-            initial_capital=initial_capital,
-            leverage=leverage,
-            real_trading=real_trading
-        )
-        
-        # Sprawdź inicjalizację sesji dla real trading
-        if real_trading and trading_bot.session is None:
-            return jsonify({
-                'status': 'error',
-                'message': 'Failed to initialize trading session. Check API keys.'
-            }), 400
-        
-        # Uruchom bota
-        trading_bot.start_trading()
-        
-        return jsonify({
-            'status': 'success',
-            'message': 'Bot started successfully',
-            'mode': 'REAL' if real_trading else 'VIRTUAL',
-            'initial_capital': initial_capital,
-            'leverage': leverage,
-            'session_initialized': trading_bot.session is not None,
-            'trading_symbols': trading_bot.assets
-        })
-        
+            bot_status = "running"
+            return jsonify({'status': 'LLM Bot started successfully'})
+        else:
+            return jsonify({'status': 'Bot is already running'})
     except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': f'Error starting bot: {str(e)}'
-        }), 500
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/stop-bot', methods=['POST'])
 def stop_bot():
