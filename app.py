@@ -81,24 +81,43 @@ def start_bot():
     try:
         global trading_bot
         
+        if not request.is_json:
+            return jsonify({
+                'status': 'error',
+                'message': 'Content-Type must be application/json'
+            }), 415
+            
+        data = request.get_json()
+        
         # Zatrzymaj istniejącego bota jeśli działa
-        if trading_bot and trading_bot.is_running:
+        if trading_bot and hasattr(trading_bot, 'is_running') and trading_bot.is_running:
             trading_bot.stop_trading()
+            time.sleep(2)  # Czekaj na bezpieczne zamknięcie
             
         # Pobierz dane z requesta
-        data = request.get_json()
         api_key = data.get('api_key', '')
         api_secret = data.get('api_secret', '')
         real_trading = data.get('real_trading', False)
+        initial_capital = data.get('initial_capital', 10000)
+        leverage = data.get('leverage', 10)
+        
+        # Walidacja dla real trading
+        if real_trading and (not api_key or not api_secret):
+            return jsonify({
+                'status': 'error',
+                'message': 'API key and secret required for real trading'
+            }), 400
         
         # Utwórz nowego bota
         trading_bot = LLMTradingBot(
             api_key=api_key,
             api_secret=api_secret,
+            initial_capital=initial_capital,
+            leverage=leverage,
             real_trading=real_trading
         )
         
-        # Sprawdź czy sesja jest poprawnie zainicjalizowana
+        # Sprawdź inicjalizację sesji dla real trading
         if real_trading and trading_bot.session is None:
             return jsonify({
                 'status': 'error',
@@ -111,8 +130,11 @@ def start_bot():
         return jsonify({
             'status': 'success',
             'message': 'Bot started successfully',
-            'real_trading': real_trading,
-            'session_initialized': trading_bot.session is not None
+            'mode': 'REAL' if real_trading else 'VIRTUAL',
+            'initial_capital': initial_capital,
+            'leverage': leverage,
+            'session_initialized': trading_bot.session is not None,
+            'trading_symbols': trading_bot.assets
         })
         
     except Exception as e:
