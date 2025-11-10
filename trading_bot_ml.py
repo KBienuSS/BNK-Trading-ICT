@@ -275,33 +275,18 @@ class LLMTradingBot:
                 'symbol': symbol
             }
             
-            self.logger.info(f"🔍 Fetching PUBLIC FUTURES price for {symbol}")
-            
             response = requests.get(url, params=params, timeout=10)
-            self.logger.info(f"📨 Public API status: {response.status_code}")
             
             if response.status_code == 200:
                 data = response.json()
-                self.logger.info(f"📄 Public API data: {data}")
                 
-                # Sprawdzamy retCode w głównej części odpowiedzi
                 if data.get('retCode') == 0:
                     result = data.get('result', {})
                     if 'list' in result and len(result['list']) > 0:
                         price_str = result['list'][0].get('lastPrice')
                         if price_str:
                             price = float(price_str)
-                            self.logger.info(f"✅ PUBLIC FUTURES price for {symbol}: ${price}")
                             return price
-                    else:
-                        self.logger.error(f"❌ No data in result for {symbol}")
-                else:
-                    error_msg = data.get('retMsg', 'Unknown error')
-                    self.logger.error(f"❌ Public API error: {error_msg}")
-            else:
-                self.logger.error(f"❌ HTTP error: {response.status_code}")
-                self.logger.error(f"❌ Response: {response.text}")
-            
             return None
                 
         except Exception as e:
@@ -338,8 +323,6 @@ class LLMTradingBot:
                 qty=quantity_str,
                 timeInForce="GTC",
             )
-            
-            self.logger.info(f"📨 Pybit response: {response}")
             
             if response['retCode'] == 0:
                 order_id = response['result']['orderId']
@@ -630,6 +613,50 @@ class LLMTradingBot:
             self.logger.error(f"❌ Error getting Bybit positions: {e}")
             return []
 
+    def get_bybit_unrealized_pnl(self) -> float:
+        """Pobiera unrealized P&L bezpośrednio z Bybit"""
+        if not self.real_trading:
+            # Dla trybu wirtualnego, oblicz normalnie
+            total_unrealized = 0
+            for position in self.positions.values():
+                if position['status'] == 'ACTIVE':
+                    current_price = self.get_current_price(position['symbol'])
+                    if current_price:
+                        if position['side'] == 'LONG':
+                            pnl_pct = (current_price - position['entry_price']) / position['entry_price']
+                            unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+                        else:
+                            pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
+                            unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+                        total_unrealized += unrealized_pnl
+            return total_unrealized
+            
+        if not self.session:
+            self.logger.error("❌ Brak sesji pybit")
+            return 0.0
+
+        try:
+            response = self.session.get_positions(
+                category="linear",
+                symbol=""
+            )
+            
+            if response['retCode'] == 0:
+                total_unrealized = 0.0
+                for pos in response['result']['list']:
+                    unrealised_pnl = float(pos.get('unrealisedPnl', 0))
+                    total_unrealized += unrealised_pnl
+                
+                self.logger.info(f"📊 Real Unrealized P&L from Bybit: ${total_unrealized:.2f}")
+                return total_unrealized
+            else:
+                self.logger.error(f"❌ Błąd pobierania unrealized P&L z Bybit: {response.get('retMsg', 'Unknown')}")
+                return 0.0
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error getting unrealized P&L from Bybit: {e}")
+            return 0.0
+
     def sync_with_bybit(self):
         """Synchronizuje stan z rzeczywistymi pozycjami na Bybit"""
         if not self.real_trading:
@@ -645,8 +672,12 @@ class LLMTradingBot:
                 self.virtual_balance = real_balance
                 self.virtual_capital = real_balance
             
+            # Pobierz unrealized P&L bezpośrednio z Bybit
+            real_unrealized_pnl = self.get_bybit_unrealized_pnl()
+            self.dashboard_data['unrealized_pnl'] = real_unrealized_pnl
+            
             # Log synchronizacji
-            self.logger.info(f"🔄 Zsynchronizowano z Bybit - Pozycje: {len(bybit_positions)}, Saldo: ${real_balance:.2f}")
+            self.logger.info(f"🔄 Zsynchronizowano z Bybit - Pozycje: {len(bybit_positions)}, Saldo: ${real_balance:.2f}, Unrealized P&L: ${real_unrealized_pnl:.2f}")
             
         except Exception as e:
             self.logger.error(f"❌ Error syncing with Bybit: {e}")
@@ -873,7 +904,7 @@ class LLMTradingBot:
             return None
 
     def update_positions_pnl(self):
-        """Aktualizuje P&L wszystkich pozycji używając rzeczywistych cen z Bybit API"""
+        """Aktualizuje P&L wszystkich pozycji używając rzeczywistych danych z Bybit"""
         total_unrealized = 0
         total_margin = 0
         total_confidence = 0
@@ -882,29 +913,30 @@ class LLMTradingBot:
         # Synchronizuj z Bybit jeśli używamy real trading
         if self.real_trading:
             self.sync_with_bybit()
-        
-        for position in self.positions.values():
-            if position['status'] != 'ACTIVE':
-                continue
+        else:
+            # Dla trybu wirtualnego, oblicz normalnie
+            for position in self.positions.values():
+                if position['status'] != 'ACTIVE':
+                    continue
+                    
+                current_price = self.get_current_price(position['symbol'])
+                if not current_price:
+                    continue
+                    
+                if position['side'] == 'LONG':
+                    pnl_pct = (current_price - position['entry_price']) / position['entry_price']
+                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+                else:
+                    pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
+                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
                 
-            current_price = self.get_current_price(position['symbol'])
-            if not current_price:
-                continue
+                position['unrealized_pnl'] = unrealized_pnl
+                position['current_price'] = current_price
                 
-            if position['side'] == 'LONG':
-                pnl_pct = (current_price - position['entry_price']) / position['entry_price']
-                unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
-            else:
-                pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
-                unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
-            
-            position['unrealized_pnl'] = unrealized_pnl
-            position['current_price'] = current_price
-            
-            total_unrealized += unrealized_pnl
-            total_margin += position['margin']
-            total_confidence += position['confidence']
-            confidence_count += 1
+                total_unrealized += unrealized_pnl
+                total_margin += position['margin']
+                total_confidence += position['confidence']
+                confidence_count += 1
         
         # Użyj rzeczywistego salda konta
         real_balance = self.get_account_balance()
@@ -915,7 +947,15 @@ class LLMTradingBot:
             account_value = self.virtual_capital + total_unrealized
             available_cash = self.virtual_balance
         
-        self.dashboard_data['unrealized_pnl'] = total_unrealized
+        # Dla real trading, użyj bezpośrednio z Bybit
+        if self.real_trading:
+            total_unrealized = self.get_bybit_unrealized_pnl()
+            self.dashboard_data['unrealized_pnl'] = total_unrealized
+            if real_balance:
+                account_value = real_balance + total_unrealized
+            else:
+                account_value = self.virtual_capital + total_unrealized
+        
         self.dashboard_data['account_value'] = account_value
         self.dashboard_data['available_cash'] = available_cash
         
@@ -1168,12 +1208,17 @@ class LLMTradingBot:
         return status
 
     def get_dashboard_data(self):
-        """Przygotowuje dane dla dashboardu używając rzeczywistych cen z Bybit API"""
+        """Przygotowuje dane dla dashboardu używając rzeczywistych danych z Bybit"""
         # Sprawdź status API i pobierz saldo
         api_status = self.check_api_status()
         
         active_positions = []
         total_unrealized_pnl = 0
+        
+        # Pobierz unrealized P&L bezpośrednio z Bybit dla real trading
+        if self.real_trading:
+            total_unrealized_pnl = self.get_bybit_unrealized_pnl()
+            self.dashboard_data['unrealized_pnl'] = total_unrealized_pnl
         
         for position_id, position in self.positions.items():
             if position['status'] == 'ACTIVE':
@@ -1181,12 +1226,22 @@ class LLMTradingBot:
                 if not current_price:
                     continue
                 
-                if position['side'] == 'LONG':
-                    pnl_pct = (current_price - position['entry_price']) / position['entry_price']
-                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+                # Dla real trading, użyj danych z Bybit, dla virtual oblicz
+                if self.real_trading:
+                    # Pobierz aktualne dane pozycji z Bybit
+                    bybit_positions = self.get_bybit_positions()
+                    unrealized_pnl = 0
+                    for bp in bybit_positions:
+                        if bp['symbol'] == position['symbol']:
+                            unrealized_pnl = bp['unrealised_pnl']
+                            break
                 else:
-                    pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
-                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+                    if position['side'] == 'LONG':
+                        pnl_pct = (current_price - position['entry_price']) / position['entry_price']
+                        unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+                    else:
+                        pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
+                        unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
                 
                 # Oblicz odległości do TP/SL
                 if position['side'] == 'LONG':
@@ -1215,7 +1270,8 @@ class LLMTradingBot:
                     'real_trading': position.get('real_trading', False)
                 })
                 
-                total_unrealized_pnl += unrealized_pnl
+                if not self.real_trading:
+                    total_unrealized_pnl += unrealized_pnl
         
         # Oblicz confidence levels dla każdego assetu
         confidence_levels = {}
@@ -1251,13 +1307,13 @@ class LLMTradingBot:
         current_balance = api_status['balance'] if api_status['balance_available'] else self.virtual_balance
         
         if current_balance:
-            total_return_pct = ((current_balance - self.initial_capital) / self.initial_capital) * 100
+            total_return_pct = ((current_balance + total_unrealized_pnl - self.initial_capital) / self.initial_capital) * 100
         else:
             total_return_pct = 0
         
         return {
             'account_summary': {
-                'total_value': round(current_balance, 2) if current_balance else 0,
+                'total_value': round(current_balance + total_unrealized_pnl, 2) if current_balance else 0,
                 'available_cash': round(current_balance, 2) if current_balance else 0,
                 'net_realized': round(self.dashboard_data['net_realized'], 2),
                 'unrealized_pnl': round(total_unrealized_pnl, 2),
