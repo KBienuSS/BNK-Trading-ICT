@@ -77,7 +77,10 @@ class LLMTradingBot:
                 'short_frequency': 0.1,
                 'holding_bias': 'LONG',
                 'trade_frequency': 'LOW',
-                'position_sizing': 'CONSERVATIVE'
+                'position_sizing': 'CONSERVATIVE',
+                'max_position_size_pct': 0.15,  # Maksymalny rozmiar pozycji jako % kapitału
+                'min_confidence': 0.4,  # Minimalne confidence do otwarcia pozycji
+                'momentum_threshold': 0.005  # Próg momentum dla wejścia
             },
             'Gemini': {
                 'risk_appetite': 'HIGH', 
@@ -85,7 +88,10 @@ class LLMTradingBot:
                 'short_frequency': 0.35,
                 'holding_bias': 'SHORT',
                 'trade_frequency': 'HIGH',
-                'position_sizing': 'AGGRESSIVE'
+                'position_sizing': 'AGGRESSIVE',
+                'max_position_size_pct': 0.25,
+                'min_confidence': 0.35,
+                'momentum_threshold': 0.003
             },
             'GPT': {
                 'risk_appetite': 'LOW',
@@ -93,7 +99,10 @@ class LLMTradingBot:
                 'short_frequency': 0.4,
                 'holding_bias': 'NEUTRAL',
                 'trade_frequency': 'MEDIUM',
-                'position_sizing': 'CONSERVATIVE'
+                'position_sizing': 'CONSERVATIVE',
+                'max_position_size_pct': 0.10,
+                'min_confidence': 0.5,
+                'momentum_threshold': 0.008
             },
             'Qwen': {
                 'risk_appetite': 'HIGH',
@@ -101,7 +110,10 @@ class LLMTradingBot:
                 'short_frequency': 0.2,
                 'holding_bias': 'LONG', 
                 'trade_frequency': 'MEDIUM',
-                'position_sizing': 'VERY_AGGRESSIVE'
+                'position_sizing': 'VERY_AGGRESSIVE',
+                'max_position_size_pct': 0.30,
+                'min_confidence': 0.3,
+                'momentum_threshold': 0.002
             }
         }
         
@@ -436,25 +448,35 @@ class LLMTradingBot:
         final_confidence = min(base_confidence + confidence_modifiers + random.uniform(-0.1, 0.1), 0.95)
         final_confidence = max(final_confidence, 0.1)
         
-        # Decyzja o kierunku na podstawie rzeczywistego momentum
-        if momentum > 0.01 and volume_active:
-            signal = "LONG"
-        elif momentum < -0.01 and volume_active:
-            if random.random() < profile['short_frequency']:
+        # NOWA LOGIKA OTWIERANIA POZYCJI - oparta na momentum threshold
+        momentum_threshold = profile['momentum_threshold']
+        min_confidence = profile['min_confidence']
+        
+        signal = "HOLD"
+        
+        # Sprawdź warunki wejścia LONG
+        if momentum > momentum_threshold and volume_active and final_confidence >= min_confidence:
+            if profile['holding_bias'] in ['LONG', 'NEUTRAL']:
+                signal = "LONG"
+            elif random.random() < 0.7:  # 70% szans na LONG nawet przy bias SHORT jeśli warunki dobre
+                signal = "LONG"
+        
+        # Sprawdź warunki wejścia SHORT        
+        elif momentum < -momentum_threshold and volume_active and final_confidence >= min_confidence:
+            if profile['holding_bias'] in ['SHORT', 'NEUTRAL']:
+                if random.random() < profile['short_frequency']:
+                    signal = "SHORT"
+            elif random.random() < 0.3:  # 30% szans na SHORT nawet przy bias LONG jeśli warunki dobre
                 signal = "SHORT"
-            else:
-                signal = "HOLD"
-        else:
-            signal = "HOLD"
             
         current_price = self.get_current_price(symbol)
         price_display = f"${current_price:.4f}" if current_price else "N/A"
-        self.logger.info(f"🎯 {self.active_profile} SIGNAL: {symbol} -> {signal} (Price: {price_display}, Conf: {final_confidence:.1%}, Mom: {momentum:.2%})")
+        self.logger.info(f"🎯 {self.active_profile} SIGNAL: {symbol} -> {signal} (Price: {price_display}, Conf: {final_confidence:.1%}, Mom: {momentum:.2%}, Threshold: {momentum_threshold:.3f})")
         
         return signal, final_confidence
 
     def calculate_position_size(self, symbol: str, price: float, confidence: float) -> Tuple[float, float, float]:
-        """Oblicza wielkość pozycji w stylu LLM"""
+        """Oblicza wielkość pozycji w stylu LLM - POPRAWIONA LOGIKA"""
         profile = self.get_current_profile()
         
         # Pobierz rzeczywiste saldo konta
@@ -462,29 +484,43 @@ class LLMTradingBot:
         if real_balance is None:
             real_balance = self.virtual_balance
         
-        base_allocation = {
-            'Claude': 0.15,
-            'Gemini': 0.25, 
-            'GPT': 0.10,
-            'Qwen': 0.30
-        }.get(self.active_profile, 0.15)
+        # Bazowa alokacja z profilu
+        base_allocation = profile['max_position_size_pct']
         
-        confidence_multiplier = 0.5 + (confidence * 0.5)
+        # Modyfikator na podstawie confidence
+        confidence_multiplier = 0.3 + (confidence * 0.7)  # 30-100% w zależności od confidence
         
-        sizing_multiplier = {
-            'CONSERVATIVE': 0.8,
-            'AGGRESSIVE': 1.2,
-            'VERY_AGGRESSIVE': 1.5
-        }.get(profile['position_sizing'], 1.0)
+        # Modyfikator na podstawie risk appetite
+        risk_multiplier = {
+            'LOW': 0.6,
+            'MEDIUM': 1.0,
+            'HIGH': 1.4
+        }.get(profile['risk_appetite'], 1.0)
         
+        # Oblicz wartość pozycji
         position_value = (real_balance * base_allocation * 
-                         confidence_multiplier * sizing_multiplier)
+                         confidence_multiplier * risk_multiplier)
         
+        # Maksymalna wartość pozycji to 40% kapitału
         max_position_value = real_balance * 0.4
         position_value = min(position_value, max_position_value)
         
+        # Minimalna wartość pozycji to $5
+        min_position_value = 5
+        if position_value < min_position_value:
+            self.logger.warning(f"⚠️ Calculated position value too small: ${position_value:.2f}, using minimum: ${min_position_value}")
+            position_value = min_position_value
+        
+        # Sprawdź czy nie przekraczamy dostępnego kapitału
+        available_margin = real_balance * 0.8  # Zostaw 20% jako bufor
+        if position_value > available_margin:
+            position_value = available_margin
+            self.logger.info(f"📊 Adjusted position size to available margin: ${position_value:.2f}")
+        
         quantity = position_value / price
         margin_required = position_value / self.leverage
+        
+        self.logger.info(f"📏 POSITION SIZE: Value: ${position_value:.2f}, Qty: {quantity:.6f}, Margin: ${margin_required:.2f}, Confidence: {confidence:.1%}")
         
         return quantity, position_value, margin_required
 
@@ -684,17 +720,50 @@ class LLMTradingBot:
             'max_holding_hours': random.randint(1, 6)
         }
 
-    def should_enter_trade(self) -> bool:
-        """Decyduje czy wejść w transakcję wg profilu częstotliwości"""
+    def should_enter_trade(self, symbol: str, signal: str, confidence: float) -> bool:
+        """Decyduje czy wejść w transakcję - POPRAWIONA LOGIKA"""
         profile = self.get_current_profile()
         
+        # Sprawdź minimalne confidence
+        if confidence < profile['min_confidence']:
+            self.logger.info(f"❌ Confidence too low for {symbol}: {confidence:.1%} < {profile['min_confidence']:.1%}")
+            return False
+        
+        # Sprawdź częstotliwość tradingu
         frequency_chance = {
             'LOW': 0.3,
             'MEDIUM': 0.5,
             'HIGH': 0.7
         }.get(profile['trade_frequency'], 0.5)
         
-        return random.random() < frequency_chance
+        if random.random() > frequency_chance:
+            self.logger.info(f"⏸️ Trade frequency filter for {symbol}")
+            return False
+        
+        # Sprawdź czy mamy wystarczający kapitał
+        current_price = self.get_current_price(symbol)
+        if not current_price:
+            return False
+            
+        # Oblicz minimalny wymagany margin
+        min_position_value = 5
+        min_margin = min_position_value / self.leverage
+        
+        real_balance = self.get_account_balance()
+        if real_balance is None:
+            real_balance = self.virtual_balance
+            
+        if real_balance < min_margin:
+            self.logger.warning(f"💰 Insufficient balance for {symbol}")
+            return False
+        
+        # Sprawdź czy nie przekraczamy maksymalnej liczby pozycji
+        active_count = sum(1 for p in self.positions.values() if p['status'] == 'ACTIVE')
+        if active_count >= self.max_simultaneous_positions:
+            self.logger.info(f"📊 Max positions reached: {active_count}/{self.max_simultaneous_positions}")
+            return False
+            
+        return True
 
     def check_minimum_balance(self, symbol: str, price: float) -> bool:
         """Sprawdza czy saldo jest wystarczające dla danego assetu"""
@@ -715,9 +784,9 @@ class LLMTradingBot:
         return True
     
     def open_llm_position(self, symbol: str):
-        """Otwiera pozycję - WYMUSZONE TESTY"""
+        """Otwiera pozycję - POPRAWIONA LOGIKA"""
         
-        self.logger.info(f"🔍 TEST OPEN_POSITION for {symbol}")
+        self.logger.info(f"🔍 ANALYZING {symbol} for position opening...")
         
         try:
             # 1. Pobierz cenę
@@ -728,33 +797,40 @@ class LLMTradingBot:
             
             self.logger.info(f"💰 Current price: ${current_price}")
     
-            # 2. WYMUŚ SYGNAŁ LONG dla testu
-            signal = "LONG"
-            confidence = 0.8
-            self.logger.info(f"🎯 FORCED SIGNAL: {signal} (Confidence: {confidence})")
+            # 2. Wygeneruj sygnał
+            signal, confidence = self.generate_llm_signal(symbol)
+            
+            # 3. Sprawdź warunki wejścia
+            if not self.should_enter_trade(symbol, signal, confidence):
+                self.logger.info(f"⏸️ Trade conditions not met for {symbol}")
+                return None
+                
+            if signal == "HOLD":
+                self.logger.info(f"⏸️ Holding position for {symbol}")
+                return None
     
-            # 3. Oblicz wielkość pozycji (bardzo mała dla testu)
-            test_quantity = 0.001  # Bardzo mała ilość dla testu
-            if symbol == "BTCUSDT":
-                test_quantity = 0.001
-            elif symbol == "ETHUSDT":
-                test_quantity = 0.01
-            else:
-                test_quantity = 1.0
+            # 4. Oblicz wielkość pozycji
+            quantity, position_value, margin_required = self.calculate_position_size(
+                symbol, current_price, confidence
+            )
+            
+            # 5. Sprawdź minimalną wartość zlecenia
+            if not self.check_minimum_order(symbol, quantity, current_price):
+                self.logger.warning(f"❌ Minimum order requirement not met for {symbol}")
+                return None
     
-            # 4. Sprawdź minimalną wartość zlecenia
-            order_value = test_quantity * current_price
-            self.logger.info(f"📦 Test order - Qty: {test_quantity}, Value: ${order_value:.2f}")
+            # 6. Sprawdź dostępność kapitału
+            real_balance = self.get_account_balance()
+            if real_balance is None:
+                real_balance = self.virtual_balance
+                
+            if margin_required > real_balance * 0.8:  # Zostaw 20% bufor
+                self.logger.warning(f"💰 Insufficient margin for {symbol}. Required: ${margin_required:.2f}, Available: ${real_balance:.2f}")
+                return None
     
-            if order_value < 5:
-                self.logger.warning(f"⚠️ Order value too small: ${order_value:.2f}")
-                # Zwiększ ilość do minimum
-                test_quantity = 5 / current_price
-                self.logger.info(f"📦 Adjusted quantity: {test_quantity:.6f}")
-    
-            # 5. SPRÓBUJ ZŁOŻYĆ ZLECENIE
-            self.logger.info(f"🚀 ATTEMPTING REAL ORDER...")
-            order_id = self.place_bybit_order(symbol, signal, test_quantity, current_price)
+            # 7. SPRÓBUJ ZŁOŻYĆ ZLECENIE
+            self.logger.info(f"🚀 ATTEMPTING ORDER: {symbol} {signal} Qty: {quantity:.6f}")
+            order_id = self.place_bybit_order(symbol, signal, quantity, current_price)
             
             if order_id:
                 self.logger.info(f"🎉 SUCCESS! Order placed: {order_id}")
@@ -765,26 +841,35 @@ class LLMTradingBot:
                     'symbol': symbol,
                     'side': signal,
                     'entry_price': current_price,
-                    'quantity': test_quantity,
+                    'quantity': quantity,
                     'leverage': self.leverage,
                     'entry_time': datetime.now(),
                     'status': 'ACTIVE',
                     'order_id': order_id,
-                    'real_trading': True,
+                    'real_trading': self.real_trading,
                     'llm_profile': self.active_profile,
                     'confidence': confidence,
-                    'margin': test_quantity * current_price / self.leverage,
+                    'margin': margin_required,
                     'exit_plan': self.calculate_llm_exit_plan(current_price, confidence, signal),
                     'liquidation_price': current_price * 0.9 if signal == 'LONG' else current_price * 1.1
                 }
                 
+                # Aktualizuj saldo wirtualne
+                if not self.real_trading:
+                    self.virtual_balance -= margin_required
+                
+                if signal == "LONG":
+                    self.stats['long_trades'] += 1
+                else:
+                    self.stats['short_trades'] += 1
+                    
                 return position_id
             else:
                 self.logger.error(f"❌ FAILED to place order")
                 return None
                 
         except Exception as e:
-            self.logger.error(f"💥 Error in test position: {e}")
+            self.logger.error(f"💥 Error in position opening: {e}")
             return None
 
     def update_positions_pnl(self):
@@ -1284,3 +1369,111 @@ class LLMTradingBot:
         """Zatrzymuje trading"""
         self.is_running = False
         self.logger.info("🛑 LLM Trading Bot stopped")
+
+
+# FLASK APP
+app = Flask(__name__)
+CORS(app)
+
+# Inicjalizacja bota
+trading_bot = LLMTradingBot(initial_capital=10000, leverage=10)
+
+# Routes do renderowania stron
+@app.route('/')
+def index():
+    """Strona główna - renderuje template index.html"""
+    return render_template('index.html')
+
+@app.route('/dashboard')
+def dashboard():
+    """Dashboard - również renderuje index.html (lub inny template jeśli masz)"""
+    return render_template('index.html')
+
+# API endpoints
+@app.route('/api/trading-data')
+def get_trading_data():
+    """Zwraca dane tradingowe dla dashboardu"""
+    try:
+        data = trading_bot.get_dashboard_data()
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/bot-status')
+def get_bot_status():
+    """Zwraca status bota"""
+    status = 'running' if trading_bot.is_running else 'stopped'
+    return jsonify({'status': status})
+
+@app.route('/api/start-bot', methods=['POST'])
+def start_bot():
+    """Uruchamia bota"""
+    try:
+        trading_bot.start_trading()
+        return jsonify({'status': 'Bot started successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stop-bot', methods=['POST'])
+def stop_bot():
+    """Zatrzymuje bota"""
+    try:
+        trading_bot.stop_trading()
+        return jsonify({'status': 'Bot stopped successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/change-profile', methods=['POST'])
+def change_profile():
+    """Zmienia profil LLM"""
+    try:
+        data = request.get_json()
+        profile_name = data.get('profile')
+        
+        if trading_bot.set_active_profile(profile_name):
+            return jsonify({'status': f'Profile changed to {profile_name}'})
+        else:
+            return jsonify({'error': 'Invalid profile name'}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/force-update', methods=['POST'])
+def force_update():
+    """Wymusza aktualizację danych"""
+    try:
+        trading_bot.update_positions_pnl()
+        return jsonify({'status': 'Data updated successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/save-chart-data', methods=['POST'])
+def save_chart_data():
+    """Zapisuje dane wykresu"""
+    try:
+        data = request.get_json()
+        if trading_bot.save_chart_data(data):
+            return jsonify({'status': 'success'})
+        else:
+            return jsonify({'error': 'Failed to save chart data'}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/load-chart-data')
+def load_chart_data():
+    """Ładuje dane wykresu"""
+    try:
+        chart_data = trading_bot.load_chart_data()
+        return jsonify({
+            'status': 'success',
+            'chartData': chart_data
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+if __name__ == '__main__':
+    print("🚀 Starting LLM Trading Bot Server...")
+    print("📍 Dashboard available at: http://localhost:5000")
+    print("🧠 LLM Profiles: Claude, Gemini, GPT, Qwen")
+    print("📈 Trading assets: BTC, ETH, SOL, XRP, BNB, DOGE")
+    print("💹 Using REAL-TIME prices from Bybit API only")
+    app.run(debug=True, host='0.0.0.0', port=5000)
