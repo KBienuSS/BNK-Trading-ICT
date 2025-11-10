@@ -78,22 +78,48 @@ def get_bot_status():
 
 @app.route('/api/start-bot', methods=['POST'])
 def start_bot():
-    global bot_status, llm_trading_bot  # Zmieniam na llm_trading_bot
     try:
-        if bot_status != "running":
-            # Start LLM bot
-            llm_trading_bot = LLMTradingBot()  # Używamy LLMTradingBot
+        global trading_bot
+        
+        # Zatrzymaj istniejącego bota jeśli działa
+        if trading_bot and trading_bot.is_running:
+            trading_bot.stop_trading()
             
-            bot_thread = threading.Thread(target=run_bot)
-            bot_thread.daemon = True
-            bot_thread.start()
-            
-            bot_status = "running"
-            return jsonify({'status': 'LLM Bot started successfully'})
-        else:
-            return jsonify({'status': 'Bot is already running'})
+        # Pobierz dane z requesta
+        data = request.get_json()
+        api_key = data.get('api_key', '')
+        api_secret = data.get('api_secret', '')
+        real_trading = data.get('real_trading', False)
+        
+        # Utwórz nowego bota
+        trading_bot = LLMTradingBot(
+            api_key=api_key,
+            api_secret=api_secret,
+            real_trading=real_trading
+        )
+        
+        # Sprawdź czy sesja jest poprawnie zainicjalizowana
+        if real_trading and trading_bot.session is None:
+            return jsonify({
+                'status': 'error',
+                'message': 'Failed to initialize trading session. Check API keys.'
+            }), 400
+        
+        # Uruchom bota
+        trading_bot.start_trading()
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Bot started successfully',
+            'real_trading': real_trading,
+            'session_initialized': trading_bot.session is not None
+        })
+        
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({
+            'status': 'error',
+            'message': f'Error starting bot: {str(e)}'
+        }), 500
 
 @app.route('/api/stop-bot', methods=['POST'])
 def stop_bot():
