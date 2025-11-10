@@ -760,7 +760,7 @@ class LLMTradingBot:
             self.logger.error(f"❌ Stack trace: {traceback.format_exc()}")
             return []
 
-   def calculate_llm_exit_plan(self, entry_price: float, confidence: float, side: str) -> Dict:
+    def calculate_llm_exit_plan(self, entry_price: float, confidence: float, side: str) -> Dict:
         """Oblicza plan wyjścia w stylu LLM - ULEPSZONY"""
         profile = self.get_current_profile()
         
