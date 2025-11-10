@@ -112,6 +112,15 @@ class LLMTradingBot:
         self.max_simultaneous_positions = 4
         self.assets = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'DOGEUSDT']
         
+        # AUTOMATYCZNE WYKRYWANIE DOSTĘPNYCH SYMBOLI
+        self.available_symbols = self.get_available_futures_symbols()
+        if self.available_symbols:
+            self.logger.info(f"📊 Available trading symbols: {self.available_symbols}")
+            # Użyj tylko dostępnych symboli
+            self.assets = [asset for asset in self.assets if asset in self.available_symbols]
+        
+        self.logger.info(f"🎯 Final trading assets: {self.assets}")
+        
         # STATYSTYKI
         self.stats = {
             'total_trades': 0,
@@ -454,7 +463,7 @@ class LLMTradingBot:
         return signal, final_confidence
 
     def calculate_position_size(self, symbol: str, price: float, confidence: float) -> Tuple[float, float, float]:
-        """Oblicza wielkość pozycji w stylu LLM"""
+        """Oblicza wielkość pozycji w stylu LLM - POPRAWIONA"""
         profile = self.get_current_profile()
         
         # Pobierz rzeczywiste saldo konta
@@ -480,6 +489,11 @@ class LLMTradingBot:
         position_value = (real_balance * base_allocation * 
                          confidence_multiplier * sizing_multiplier)
         
+        # MINIMALNA WARTOŚĆ ZLECENIA: $10 (zamiast $5 dla bezpieczeństwa)
+        min_order_value = 10
+        position_value = max(position_value, min_order_value)
+        
+        # MAKSYMALNA WARTOŚĆ: 40% salda
         max_position_value = real_balance * 0.4
         position_value = min(position_value, max_position_value)
         
@@ -558,18 +572,18 @@ class LLMTradingBot:
             return False
 
     def get_bybit_positions(self) -> List[Dict]:
-        """Pobiera aktywne pozycje z Bybit używając pybit"""
+        """Pobiera aktywne pozycje z Bybit używając pybit - POPRAWIONA"""
         if not self.real_trading:
             return []
             
         if not self.session:
             self.logger.error("❌ Brak sesji pybit")
             return []
-
+    
         try:
             response = self.session.get_positions(
                 category="linear",
-                symbol=""  # Pobierz wszystkie pozycje
+                settleCoin="USDT"  # DODAJ TEN PARAMETR
             )
             
             if response['retCode'] == 0:
@@ -616,10 +630,10 @@ class LLMTradingBot:
             self.logger.error(f"❌ Error syncing with Bybit: {e}")
 
     def get_available_futures_symbols(self):
-        """Pobiera listę dostępnych futures symboli używając pybit"""
+        """Pobiera listę dostępnych futures symboli używając pybit - POPRAWIONA"""
         if not self.session:
             self.logger.error("❌ Brak sesji pybit")
-            return []
+            return self.assets  # Fallback do domyślnych
             
         try:
             response = self.session.get_tickers(
@@ -627,16 +641,19 @@ class LLMTradingBot:
             )
             
             if response['retCode'] == 0:
-                symbols = [ticker['symbol'] for ticker in response['result']['list']]
-                self.logger.info(f"📊 Available futures symbols: {len(symbols)}")
-                # Pokaż tylko nasze aktywa
-                our_symbols = [s for s in symbols if s in self.assets]
-                self.logger.info(f"📈 Our trading symbols: {our_symbols}")
-                return symbols
-            return []
+                all_symbols = [ticker['symbol'] for ticker in response['result']['list']]
+                
+                # Filtruj tylko nasze interesujące symbole
+                available = [sym for sym in self.assets if sym in all_symbols]
+                
+                self.logger.info(f"📈 Available symbols from Bybit: {available}")
+                return available
+            else:
+                self.logger.warning(f"⚠️ Could not fetch available symbols, using defaults")
+                return self.assets
         except Exception as e:
             self.logger.error(f"❌ Error getting futures symbols: {e}")
-            return []
+            return self.assets
 
     def calculate_llm_exit_plan(self, entry_price: float, confidence: float, side: str) -> Dict:
         """Oblicza plan wyjścia w stylu LLM"""
@@ -715,9 +732,14 @@ class LLMTradingBot:
         return True
     
     def open_llm_position(self, symbol: str):
-        """Otwiera pozycję - WYMUSZONE TESTY"""
+        """Otwiera pozycję - POPRAWIONA Z SPRAWDZENIEM DOSTĘPNOŚCI"""
         
-        self.logger.info(f"🔍 TEST OPEN_POSITION for {symbol}")
+        # Sprawdź czy symbol jest dostępny
+        if symbol not in self.assets:
+            self.logger.warning(f"⚠️ Symbol {symbol} nie jest dostępny, pomijam")
+            return None
+        
+        self.logger.info(f"🔍 OPEN_POSITION for {symbol}")
         
         try:
             # 1. Pobierz cenę
@@ -733,28 +755,14 @@ class LLMTradingBot:
             confidence = 0.8
             self.logger.info(f"🎯 FORCED SIGNAL: {signal} (Confidence: {confidence})")
     
-            # 3. Oblicz wielkość pozycji (bardzo mała dla testu)
-            test_quantity = 0.001  # Bardzo mała ilość dla testu
-            if symbol == "BTCUSDT":
-                test_quantity = 0.001
-            elif symbol == "ETHUSDT":
-                test_quantity = 0.01
-            else:
-                test_quantity = 1.0
+            # 3. Oblicz wielkość pozycji z poprawioną metodą
+            quantity, position_value, margin_required = self.calculate_position_size(symbol, current_price, confidence)
+            
+            self.logger.info(f"📦 Calculated - Qty: {quantity:.6f}, Value: ${position_value:.2f}")
     
-            # 4. Sprawdź minimalną wartość zlecenia
-            order_value = test_quantity * current_price
-            self.logger.info(f"📦 Test order - Qty: {test_quantity}, Value: ${order_value:.2f}")
-    
-            if order_value < 5:
-                self.logger.warning(f"⚠️ Order value too small: ${order_value:.2f}")
-                # Zwiększ ilość do minimum
-                test_quantity = 5 / current_price
-                self.logger.info(f"📦 Adjusted quantity: {test_quantity:.6f}")
-    
-            # 5. SPRÓBUJ ZŁOŻYĆ ZLECENIE
+            # 4. SPRÓBUJ ZŁOŻYĆ ZLECENIE
             self.logger.info(f"🚀 ATTEMPTING REAL ORDER...")
-            order_id = self.place_bybit_order(symbol, signal, test_quantity, current_price)
+            order_id = self.place_bybit_order(symbol, signal, quantity, current_price)
             
             if order_id:
                 self.logger.info(f"🎉 SUCCESS! Order placed: {order_id}")
@@ -765,7 +773,7 @@ class LLMTradingBot:
                     'symbol': symbol,
                     'side': signal,
                     'entry_price': current_price,
-                    'quantity': test_quantity,
+                    'quantity': quantity,
                     'leverage': self.leverage,
                     'entry_time': datetime.now(),
                     'status': 'ACTIVE',
@@ -773,7 +781,7 @@ class LLMTradingBot:
                     'real_trading': True,
                     'llm_profile': self.active_profile,
                     'confidence': confidence,
-                    'margin': test_quantity * current_price / self.leverage,
+                    'margin': margin_required,
                     'exit_plan': self.calculate_llm_exit_plan(current_price, confidence, signal),
                     'liquidation_price': current_price * 0.9 if signal == 'LONG' else current_price * 1.1
                 }
@@ -784,7 +792,7 @@ class LLMTradingBot:
                 return None
                 
         except Exception as e:
-            self.logger.error(f"💥 Error in test position: {e}")
+            self.logger.error(f"💥 Error in open position: {e}")
             return None
 
     def update_positions_pnl(self):
