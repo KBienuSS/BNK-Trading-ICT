@@ -77,7 +77,10 @@ class LLMTradingBot:
                 'short_frequency': 0.1,
                 'holding_bias': 'LONG',
                 'trade_frequency': 'LOW',
-                'position_sizing': 'CONSERVATIVE'
+                'position_sizing': 'CONSERVATIVE',
+                'max_position_size_pct': 0.15,  # Maksymalny rozmiar pozycji jako % kapitału
+                'min_confidence': 0.4,  # Minimalne confidence do otwarcia pozycji
+                'momentum_threshold': 0.005  # Próg momentum dla wejścia
             },
             'Gemini': {
                 'risk_appetite': 'HIGH', 
@@ -85,7 +88,10 @@ class LLMTradingBot:
                 'short_frequency': 0.35,
                 'holding_bias': 'SHORT',
                 'trade_frequency': 'HIGH',
-                'position_sizing': 'AGGRESSIVE'
+                'position_sizing': 'AGGRESSIVE',
+                'max_position_size_pct': 0.25,
+                'min_confidence': 0.35,
+                'momentum_threshold': 0.003
             },
             'GPT': {
                 'risk_appetite': 'LOW',
@@ -93,7 +99,10 @@ class LLMTradingBot:
                 'short_frequency': 0.4,
                 'holding_bias': 'NEUTRAL',
                 'trade_frequency': 'MEDIUM',
-                'position_sizing': 'CONSERVATIVE'
+                'position_sizing': 'CONSERVATIVE',
+                'max_position_size_pct': 0.10,
+                'min_confidence': 0.5,
+                'momentum_threshold': 0.008
             },
             'Qwen': {
                 'risk_appetite': 'HIGH',
@@ -101,7 +110,10 @@ class LLMTradingBot:
                 'short_frequency': 0.2,
                 'holding_bias': 'LONG', 
                 'trade_frequency': 'MEDIUM',
-                'position_sizing': 'VERY_AGGRESSIVE'
+                'position_sizing': 'VERY_AGGRESSIVE',
+                'max_position_size_pct': 0.30,
+                'min_confidence': 0.3,
+                'momentum_threshold': 0.002
             }
         }
         
@@ -113,6 +125,7 @@ class LLMTradingBot:
         self.assets = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'DOGEUSDT']
         
         # STATYSTYKI
+        # STATYSTYKI - dodaj brakujące pola
         self.stats = {
             'total_trades': 0,
             'winning_trades': 0,
@@ -122,7 +135,9 @@ class LLMTradingBot:
             'long_trades': 0,
             'short_trades': 0,
             'avg_holding_time': 0,
-            'portfolio_utilization': 0
+            'portfolio_utilization': 0,
+            'won_long_trades': 0,  # DODANE
+            'won_short_trades': 0   # DODANE
         }
         
         # DASHBOARD
@@ -199,6 +214,97 @@ class LLMTradingBot:
             self.logger.error(f"❌ Error setting leverage for {symbol}: {e}")
             return False
 
+    def check_available_categories(self):
+        """Sprawdza dostępne kategorie dla konta używając pybit"""
+        self.logger.info("🔍 Checking available categories...")
+        
+        if not self.session:
+            self.logger.error("❌ Brak sesji pybit")
+            return []
+            
+        categories_to_test = ['spot', 'linear', 'inverse', 'option']
+        available_categories = []
+        
+        for category in categories_to_test:
+            try:
+                response = self.session.get_tickers(
+                    category=category,
+                    symbol='BTCUSDT'  # Sprawdź dla konkretnego symbolu
+                )
+                
+                if response['retCode'] == 0:
+                    available_categories.append(category)
+                    self.logger.info(f"✅ Category '{category}' is available")
+                else:
+                    self.logger.info(f"❌ Category '{category}' is NOT available")
+            except Exception as e:
+                self.logger.info(f"❌ Category '{category}' is NOT available: {e}")
+        
+        self.logger.info(f"📊 Available categories: {available_categories}")
+        return available_categories
+
+    def sync_all_positions_with_bybit(self):
+        """Kompletna synchronizacja pozycji z Bybit"""
+        if not self.real_trading:
+            self.logger.info("🔄 SYNC: Virtual mode - no Bybit sync needed")
+            return
+            
+        self.logger.info("🔄 FULL SYNC: Synchronizing all positions with Bybit...")
+        
+        try:
+            # 1. Pobierz wszystkie pozycje z Bybit
+            bybit_positions = self.get_bybit_positions()
+            self.logger.info(f"📊 BYBIT POSITIONS: Found {len(bybit_positions)} positions on Bybit")
+            
+            # Jeśli nie ma pozycji, sprawdź czy to problem z API
+            if len(bybit_positions) == 0:
+                self.logger.warning("⚠️ No positions found on Bybit - checking API connection...")
+                api_status = self.test_bybit_api_connection()
+                self.logger.info(f"🔧 API Status: {api_status}")
+            
+            # 2. Wyczyść stare pozycje i dodaj nowe z Bybit
+            old_count = len(self.positions)
+            self.positions = {}  # Reset lokalnych pozycji
+            
+            for i, bybit_pos in enumerate(bybit_positions):
+                position_id = f"bybit_sync_{i}_{int(time.time())}"
+                
+                current_price = self.get_current_price(bybit_pos['symbol'])
+                if not current_price:
+                    current_price = bybit_pos['entry_price']
+                    self.logger.warning(f"⚠️ Could not get current price for {bybit_pos['symbol']}, using entry price")
+                
+                # Oblicz unrealized P&L
+                unrealized_pnl = bybit_pos.get('unrealised_pnl', 0)
+                
+                self.positions[position_id] = {
+                    'symbol': bybit_pos['symbol'],
+                    'side': bybit_pos['side'],
+                    'entry_price': bybit_pos['entry_price'],
+                    'quantity': bybit_pos['size'],
+                    'leverage': bybit_pos['leverage'],
+                    'entry_time': bybit_pos.get('created_time', datetime.now()),
+                    'status': 'ACTIVE',
+                    'order_id': f"bybit_{bybit_pos['symbol']}",
+                    'real_trading': True,
+                    'llm_profile': self.active_profile,
+                    'confidence': 0.5,
+                    'margin': bybit_pos.get('position_margin', bybit_pos['size'] * bybit_pos['entry_price'] / bybit_pos['leverage']),
+                    'exit_plan': self.calculate_llm_exit_plan(bybit_pos['entry_price'], 0.5, bybit_pos['side']),
+                    'liquidation_price': bybit_pos.get('liq_price'),
+                    'unrealized_pnl': unrealized_pnl,
+                    'current_price': current_price
+                }
+                
+                self.logger.info(f"✅ SYNCED: {bybit_pos['symbol']} {bybit_pos['side']} - Size: {bybit_pos['size']}, Entry: ${bybit_pos['entry_price']}, PnL: ${unrealized_pnl:.2f}")
+            
+            self.logger.info(f"🎯 SYNC COMPLETE: {old_count} -> {len(self.positions)} positions synchronized with Bybit")
+            
+        except Exception as e:
+            self.logger.error(f"❌ SYNC ERROR: {e}")
+            import traceback
+            self.logger.error(f"❌ Stack trace: {traceback.format_exc()}")
+        
     def get_account_balance(self) -> Optional[float]:
         """Pobiera rzeczywiste saldo konta z Bybit używając pybit"""
         if not self.real_trading:
@@ -225,83 +331,6 @@ class LLMTradingBot:
             self.logger.error(f"❌ Error getting account balance from Bybit: {e}")
             return None
 
-    def get_all_bybit_positions_debug(self):
-        """Debugowa metoda do sprawdzania WSZYSTKICH pozycji na koncie"""
-        if not self.real_trading or not self.session:
-            return {"error": "Not in real trading mode or no session"}
-        
-        try:
-            self.logger.info("🔍 DEBUG: Checking ALL account positions...")
-            
-            # Sprawdź różne kategorie
-            categories = ['linear', 'inverse', 'spot']
-            all_positions = {}
-            
-            for category in categories:
-                try:
-                    response = self.session.get_positions(category=category, symbol="")
-                    self.logger.info(f"📊 {category.upper()} positions - Code: {response['retCode']}")
-                    
-                    if response['retCode'] == 0:
-                        positions = response['result'].get('list', [])
-                        all_positions[category] = positions
-                        
-                        for pos in positions:
-                            symbol = pos.get('symbol', 'Unknown')
-                            size = float(pos.get('size', 0))
-                            side = pos.get('side', 'Unknown')
-                            self.logger.info(f"  📍 {category} {symbol} {side} - Size: {size}")
-                    else:
-                        self.logger.info(f"  ❌ {category}: {response.get('retMsg', 'No positions')}")
-                        
-                except Exception as e:
-                    self.logger.error(f"❌ Error checking {category}: {e}")
-            
-            return all_positions
-            
-        except Exception as e:
-            self.logger.error(f"❌ Debug error: {e}")
-            return {"error": str(e)}
-    
-    def test_bybit_api_connection(self):
-        """Testuje połączenie z API Bybit"""
-        try:
-            if not self.real_trading or not self.session:
-                return {"status": "not_connected", "message": "Not in real trading mode"}
-            
-            # Test 1: Pobierz ticker (publiczny endpoint)
-            try:
-                ticker_response = self.session.get_tickers(category="linear", symbol="BTCUSDT")
-                ticker_status = ticker_response['retCode'] == 0
-            except:
-                ticker_status = False
-            
-            # Test 2: Pobierz saldo (prywatny endpoint)
-            try:
-                balance_response = self.session.get_wallet_balance(accountType="UNIFIED")
-                balance_status = balance_response['retCode'] == 0
-            except:
-                balance_status = False
-            
-            # Test 3: Pobierz pozycje (prywatny endpoint)
-            try:
-                positions_response = self.session.get_positions(category="linear", symbol="")
-                positions_status = positions_response['retCode'] == 0
-            except:
-                positions_status = False
-            
-            return {
-                "status": "connected",
-                "public_api": ticker_status,
-                "private_api_balance": balance_status,
-                "private_api_positions": positions_status,
-                "testnet": self.testnet,
-                "message": f"Public: {ticker_status}, Balance: {balance_status}, Positions: {positions_status}"
-            }
-            
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-        
     def get_current_price(self, symbol: str) -> Optional[float]:
         """Pobiera cenę futures TYLKO przez PUBLIC API - bez autoryzacji"""
         try:
@@ -322,37 +351,11 @@ class LLMTradingBot:
                         price_str = result['list'][0].get('lastPrice')
                         if price_str:
                             price = float(price_str)
-                            
-                            # Zapisz w cache
-                            self.price_cache[symbol] = {
-                                'price': price,
-                                'timestamp': datetime.now()
-                            }
-                            
-                            # Zapisz w historii dla analizy
-                            if symbol not in self.price_history:
-                                self.price_history[symbol] = []
-                            
-                            self.price_history[symbol].append({
-                                'price': price,
-                                'timestamp': datetime.now()
-                            })
-                            
-                            # Ogranicz historię do ostatnich 50 punktów
-                            if len(self.price_history[symbol]) > 50:
-                                self.price_history[symbol] = self.price_history[symbol][-50:]
-                            
                             return price
             return None
                 
         except Exception as e:
             self.logger.error(f"❌ Error getting PUBLIC futures price for {symbol}: {e}")
-            # Tylko cache jako fallback
-            if symbol in self.price_cache:
-                cache_age = (datetime.now() - self.price_cache[symbol]['timestamp']).total_seconds()
-                if cache_age < 300:  # 5 minut
-                    self.logger.info(f"🔄 Using cached price for {symbol} (age: {cache_age:.1f}s)")
-                    return self.price_cache[symbol]['price']
             return None
 
     def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
@@ -426,6 +429,26 @@ class LLMTradingBot:
             self.logger.error(f"❌ Error analyzing momentum for {symbol}: {e}")
             return random.uniform(-0.02, 0.02)
 
+    def check_minimum_order(self, symbol: str, quantity: float, price: float) -> bool:
+        """Sprawdza minimalne wymagania zlecenia dla symbolu"""
+        min_order_values = {
+            'BTCUSDT': 5,      # $1
+            'ETHUSDT': 5,      # $1  
+            'SOLUSDT': 5,      # $1
+            'XRPUSDT': 5,      # $1
+            'BNBUSDT': 5,     
+            'DOGEUSDT': 5,     # $1
+        }
+        
+        min_value = min_order_values.get(symbol, 1)
+        order_value = quantity * price
+        
+        if order_value < min_value:
+            self.logger.warning(f"❌ Order value too small for {symbol}. Required: ${min_value}, Actual: ${order_value:.2f}")
+            return False
+        
+        return True
+
     def check_volume_activity(self, symbol: str) -> bool:
         """Sprawdza aktywność wolumenu na podstawie zmienności cen z Bybit API"""
         try:
@@ -444,7 +467,7 @@ class LLMTradingBot:
             return random.random() < 0.6
 
     def generate_llm_signal(self, symbol: str) -> Tuple[str, float]:
-        """Generuje sygnał w stylu LLM na podstawie rzeczywistych danych z Bybit API - DOKŁADNIE JAK W DRUGIM BOCIE"""
+        """Generuje sygnał w stylu LLM na podstawie rzeczywistych danych z Bybit API"""
         profile = self.get_current_profile()
         
         # Podstawowe obserwacje na podstawie rzeczywistych cen
@@ -473,50 +496,60 @@ class LLMTradingBot:
         final_confidence = min(base_confidence + confidence_modifiers + random.uniform(-0.1, 0.1), 0.95)
         final_confidence = max(final_confidence, 0.1)
         
-        # DOKŁADNIE TAKA SAMA LOGIKA OTWIERANIA POZYCJI JAK W DRUGIM BOCIE
-        if momentum > 0.01 and volume_active:
-            signal = "LONG"
-        elif momentum < -0.01 and volume_active:
-            if random.random() < profile['short_frequency']:
+        # NOWA LOGIKA OTWIERANIA POZYCJI - oparta na momentum threshold
+        momentum_threshold = profile['momentum_threshold']
+        min_confidence = profile['min_confidence']
+        
+        signal = "HOLD"
+        
+        # Sprawdź warunki wejścia LONG
+        if momentum > momentum_threshold and volume_active and final_confidence >= min_confidence:
+            if profile['holding_bias'] in ['LONG', 'NEUTRAL']:
+                signal = "LONG"
+            elif random.random() < 0.7:  # 70% szans na LONG nawet przy bias SHORT jeśli warunki dobre
+                signal = "LONG"
+        
+        # Sprawdź warunki wejścia SHORT        
+        elif momentum < -momentum_threshold and volume_active and final_confidence >= min_confidence:
+            if profile['holding_bias'] in ['SHORT', 'NEUTRAL']:
+                if random.random() < profile['short_frequency']:
+                    signal = "SHORT"
+            elif random.random() < 0.3:  # 30% szans na SHORT nawet przy bias LONG jeśli warunki dobre
                 signal = "SHORT"
-            else:
-                signal = "HOLD"
-        else:
-            signal = "HOLD"
             
         current_price = self.get_current_price(symbol)
         price_display = f"${current_price:.4f}" if current_price else "N/A"
-        self.logger.info(f"🎯 {self.active_profile} SIGNAL: {symbol} -> {signal} (Price: {price_display}, Conf: {final_confidence:.1%}, Mom: {momentum:.2%})")
+        self.logger.info(f"🎯 {self.active_profile} SIGNAL: {symbol} -> {signal} (Price: {price_display}, Conf: {final_confidence:.1%}, Mom: {momentum:.2%}, Threshold: {momentum_threshold:.3f})")
         
         return signal, final_confidence
 
     def calculate_position_size(self, symbol: str, price: float, confidence: float) -> Tuple[float, float, float]:
-        """Oblicza wielkość pozycji w stylu LLM - DOKŁADNIE JAK W DRUGIM BOCIE"""
+        """Oblicza wielkość pozycji w stylu LLM - POPRAWIONA LOGIKA"""
         profile = self.get_current_profile()
         
-        base_allocation = {
-            'Claude': 0.15,
-            'Gemini': 0.25, 
-            'GPT': 0.10,
-            'Qwen': 0.30
-        }.get(self.active_profile, 0.15)
-        
-        confidence_multiplier = 0.5 + (confidence * 0.5)
-        
-        sizing_multiplier = {
-            'CONSERVATIVE': 0.8,
-            'AGGRESSIVE': 1.2,
-            'VERY_AGGRESSIVE': 1.5
-        }.get(profile['position_sizing'], 1.0)
-        
-        # Użyj rzeczywistego salda konta
+        # Pobierz rzeczywiste saldo konta
         real_balance = self.get_account_balance()
         if real_balance is None:
             real_balance = self.virtual_balance
         
-        position_value = (real_balance * base_allocation * 
-                         confidence_multiplier * sizing_multiplier)
+        # Bazowa alokacja z profilu
+        base_allocation = profile['max_position_size_pct']
         
+        # Modyfikator na podstawie confidence
+        confidence_multiplier = 0.3 + (confidence * 0.7)  # 30-100% w zależności od confidence
+        
+        # Modyfikator na podstawie risk appetite
+        risk_multiplier = {
+            'LOW': 0.6,
+            'MEDIUM': 1.0,
+            'HIGH': 1.4
+        }.get(profile['risk_appetite'], 1.0)
+        
+        # Oblicz wartość pozycji
+        position_value = (real_balance * base_allocation * 
+                         confidence_multiplier * risk_multiplier)
+        
+        # Maksymalna wartość pozycji to 40% kapitału
         max_position_value = real_balance * 0.4
         position_value = min(position_value, max_position_value)
         
@@ -525,6 +558,12 @@ class LLMTradingBot:
         if position_value < min_position_value:
             self.logger.warning(f"⚠️ Calculated position value too small: ${position_value:.2f}, using minimum: ${min_position_value}")
             position_value = min_position_value
+        
+        # Sprawdź czy nie przekraczamy dostępnego kapitału
+        available_margin = real_balance * 0.8  # Zostaw 20% jako bufor
+        if position_value > available_margin:
+            position_value = available_margin
+            self.logger.info(f"📊 Adjusted position size to available margin: ${position_value:.2f}")
         
         quantity = position_value / price
         margin_required = position_value / self.leverage
@@ -602,7 +641,7 @@ class LLMTradingBot:
             self.logger.error(f"❌ Error closing Bybit position: {e}")
             return False
 
-def get_bybit_positions(self) -> List[Dict]:
+    def get_bybit_positions(self) -> List[Dict]:
         """Pobiera aktywne pozycje z Bybit używając pybit"""
         if not self.real_trading:
             self.logger.info("🔄 Virtual mode - no Bybit positions")
@@ -615,66 +654,55 @@ def get_bybit_positions(self) -> List[Dict]:
         try:
             self.logger.info("🔍 Fetching positions from Bybit...")
             
-            # SPRÓBUJ RÓŻNE KATEGORIE
-            categories_to_try = ['linear', 'inverse']
-            all_positions = []
+            response = self.session.get_positions(
+                category="linear",
+                symbol=""  # Pobierz wszystkie pozycje
+            )
             
-            for category in categories_to_try:
-                try:
-                    self.logger.info(f"🔍 Trying category: {category}")
-                    response = self.session.get_positions(
-                        category=category,
-                        symbol=""  # Pobierz wszystkie pozycje
-                    )
+            self.logger.info(f"📨 Bybit API Response Code: {response['retCode']}")
+            self.logger.info(f"📨 Bybit API Message: {response.get('retMsg', 'No message')}")
+            
+            if response['retCode'] == 0:
+                active_positions = []
+                result_list = response['result'].get('list', [])
+                self.logger.info(f"📊 Found {len(result_list)} position entries in response")
+                
+                for i, pos in enumerate(result_list):
+                    size = float(pos['size'])
+                    symbol = pos['symbol']
+                    side = 'LONG' if pos['side'] == 'Buy' else 'SHORT'
                     
-                    self.logger.info(f"📨 Bybit {category} API Response Code: {response['retCode']}")
-                    self.logger.info(f"📨 Bybit {category} API Message: {response.get('retMsg', 'No message')}")
+                    self.logger.info(f"  📍 Entry {i}: {symbol} {side} - Size: {size}")
                     
-                    if response['retCode'] == 0:
-                        result_list = response['result'].get('list', [])
-                        self.logger.info(f"📊 Found {len(result_list)} position entries in {category} response")
+                    if size > 0:  # Tylko pozycje z wielkością > 0
+                        # Konwertuj timestamp na datetime
+                        created_time = datetime.fromtimestamp(int(pos['createdTime']) / 1000) if pos.get('createdTime') else datetime.now()
                         
-                        for i, pos in enumerate(result_list):
-                            size = float(pos.get('size', 0))
-                            symbol = pos.get('symbol', 'Unknown')
-                            side = 'LONG' if pos.get('side') == 'Buy' else 'SHORT'
-                            
-                            self.logger.info(f"  📍 {category} Entry {i}: {symbol} {side} - Size: {size}")
-                            
-                            if size > 0:  # Tylko pozycje z wielkością > 0
-                                # Konwertuj timestamp na datetime
-                                created_time = datetime.fromtimestamp(int(pos['createdTime']) / 1000) if pos.get('createdTime') else datetime.now()
-                                
-                                position_data = {
-                                    'symbol': symbol,
-                                    'side': side,
-                                    'size': size,
-                                    'entry_price': float(pos.get('avgPrice', 0)),
-                                    'leverage': float(pos.get('leverage', 1)),
-                                    'unrealised_pnl': float(pos.get('unrealisedPnl', 0)),
-                                    'liq_price': float(pos['liqPrice']) if pos.get('liqPrice') and pos['liqPrice'] != '' else None,
-                                    'position_value': float(pos.get('positionValue', 0)),
-                                    'position_margin': float(pos.get('positionIM', 0)),
-                                    'created_time': created_time,
-                                    'mark_price': float(pos.get('markPrice', pos.get('avgPrice', 0))),
-                                    'category': category
-                                }
-                                
-                                all_positions.append(position_data)
-                                self.logger.info(f"  ✅ ADDED: {symbol} {side} Size: {size}, Entry: ${position_data['entry_price']}")
-                            else:
-                                self.logger.info(f"  ❌ SKIPPED: {symbol} {side} - Zero size: {size}")
-                    
+                        position_data = {
+                            'symbol': symbol,
+                            'side': side,
+                            'size': size,
+                            'entry_price': float(pos['avgPrice']),
+                            'leverage': float(pos['leverage']),
+                            'unrealised_pnl': float(pos['unrealisedPnl']),
+                            'liq_price': float(pos['liqPrice']) if pos['liqPrice'] and pos['liqPrice'] != '' else None,
+                            'position_value': float(pos['positionValue']),
+                            'position_margin': float(pos['positionIM']),
+                            'created_time': created_time,
+                            'mark_price': float(pos['markPrice']) if pos.get('markPrice') else float(pos['avgPrice'])
+                        }
+                        
+                        active_positions.append(position_data)
+                        self.logger.info(f"  ✅ ADDED: {symbol} {side} Size: {size}, Entry: ${position_data['entry_price']}")
                     else:
-                        error_msg = response.get('retMsg', 'Unknown error')
-                        self.logger.info(f"ℹ️ No positions in {category}: {error_msg}")
-                        
-                except Exception as e:
-                    self.logger.error(f"❌ Error getting {category} positions: {e}")
-                    continue
-            
-            self.logger.info(f"✅ Final: {len(all_positions)} active positions on Bybit")
-            return all_positions
+                        self.logger.info(f"  ❌ SKIPPED: {symbol} {side} - Zero size: {size}")
+                
+                self.logger.info(f"✅ Final: {len(active_positions)} active positions on Bybit")
+                return active_positions
+            else:
+                error_msg = response.get('retMsg', 'Unknown error')
+                self.logger.error(f"❌ Błąd pobierania pozycji z Bybit: {error_msg}")
+                return []
             
         except Exception as e:
             self.logger.error(f"❌ Error getting Bybit positions: {e}")
@@ -682,230 +710,44 @@ def get_bybit_positions(self) -> List[Dict]:
             self.logger.error(f"❌ Stack trace: {traceback.format_exc()}")
             return []
 
-    def calculate_llm_exit_plan(self, entry_price: float, confidence: float, side: str) -> Dict:
-        """Oblicza plan wyjścia w stylu LLM - DOKŁADNIE JAK W DRUGIM BOCIE"""
-        profile = self.get_current_profile()
+    def get_all_bybit_positions_debug(self):
+        """Debugowa metoda do sprawdzania WSZYSTKICH pozycji na koncie"""
+        if not self.real_trading or not self.session:
+            return {"error": "Not in real trading mode or no session"}
         
-        if confidence > 0.7:
-            if side == "LONG":
-                take_profit = entry_price * 1.018
-                stop_loss = entry_price * 0.992
-            else:
-                take_profit = entry_price * 0.982
-                stop_loss = entry_price * 1.008
-        elif confidence > 0.5:
-            if side == "LONG":
-                take_profit = entry_price * 1.012
-                stop_loss = entry_price * 0.994
-            else:
-                take_profit = entry_price * 0.988
-                stop_loss = entry_price * 1.006
-        else:
-            if side == "LONG":
-                take_profit = entry_price * 1.008
-                stop_loss = entry_price * 0.996
-            else:
-                take_profit = entry_price * 0.992
-                stop_loss = entry_price * 1.004
-        
-        risk_multiplier = {
-            'LOW': 0.8,
-            'MEDIUM': 1.0,
-            'HIGH': 1.2
-        }.get(profile['risk_appetite'], 1.0)
-        
-        if side == "LONG":
-            take_profit = entry_price + (take_profit - entry_price) * risk_multiplier
-            stop_loss = entry_price - (entry_price - stop_loss) * risk_multiplier
-        else:
-            take_profit = entry_price - (entry_price - take_profit) * risk_multiplier
-            stop_loss = entry_price + (stop_loss - entry_price) * risk_multiplier
-        
-        return {
-            'take_profit': round(take_profit, 4),
-            'stop_loss': round(stop_loss, 4),
-            'invalidation': entry_price * 0.98 if side == "LONG" else entry_price * 1.02,
-            'max_holding_hours': random.randint(1, 6)
-        }
-
-    def should_enter_trade(self) -> bool:
-        """Decyduje czy wejść w transakcję wg profilu częstotliwości - DOKŁADNIE JAK W DRUGIM BOCIE"""
-        profile = self.get_current_profile()
-        
-        frequency_chance = {
-            'LOW': 0.3,
-            'MEDIUM': 0.5,
-            'HIGH': 0.7
-        }.get(profile['trade_frequency'], 0.5)
-        
-        return random.random() < frequency_chance
-
-    def open_llm_position(self, symbol: str):
-        """Otwiera pozycję w stylu LLM używając rzeczywistych cen z API - DOKŁADNIE JAK W DRUGIM BOCIE"""
-        
-        # 1. Sprawdź częstotliwość tradingu
-        if not self.should_enter_trade():
-            return None
+        try:
+            self.logger.info("🔍 DEBUG: Checking ALL account positions...")
             
-        # 2. Pobierz cenę
-        current_price = self.get_current_price(symbol)
-        if not current_price:
-            self.logger.warning(f"❌ Could not get price for {symbol} - skipping trade")
-            return None
+            # Sprawdź różne kategorie
+            categories = ['linear', 'inverse', 'spot']
+            all_positions = {}
             
-        # 3. Wygeneruj sygnał
-        signal, confidence = self.generate_llm_signal(symbol)
-        
-        # 4. Sprawdź warunki wejścia - DOKŁADNIE JAK W DRUGIM BOCIE
-        if signal == "HOLD" or confidence < 0.3:
-            return None
-            
-        # 5. Sprawdź liczbę aktywnych pozycji
-        active_positions = sum(1 for p in self.positions.values() if p['status'] == 'ACTIVE')
-        if active_positions >= self.max_simultaneous_positions:
-            return None
-        
-        # 6. Oblicz wielkość pozycji
-        quantity, position_value, margin_required = self.calculate_position_size(
-            symbol, current_price, confidence
-        )
-        
-        # 7. Sprawdź dostępność kapitału
-        real_balance = self.get_account_balance()
-        if real_balance is None:
-            real_balance = self.virtual_balance
-            
-        if margin_required > real_balance * 0.8:  # Zostaw 20% bufor
-            self.logger.warning(f"💰 Insufficient margin for {symbol}. Required: ${margin_required:.2f}, Available: ${real_balance:.2f}")
-            return None
-        
-        # 8. Sprawdź minimalną wartość zlecenia
-        min_order_value = 5
-        order_value = quantity * current_price
-        if order_value < min_order_value:
-            self.logger.warning(f"❌ Order value too small for {symbol}. Required: ${min_order_value}, Actual: ${order_value:.2f}")
-            return None
-            
-        # 9. SPRÓBUJ ZŁOŻYĆ ZLECENIE
-        self.logger.info(f"🚀 ATTEMPTING ORDER: {symbol} {signal} Qty: {quantity:.6f}")
-        order_id = self.place_bybit_order(symbol, signal, quantity, current_price)
-        
-        if order_id:
-            self.logger.info(f"🎉 SUCCESS! Order placed: {order_id}")
-            
-            # Oblicz plan wyjścia
-            exit_plan = self.calculate_llm_exit_plan(current_price, confidence, signal)
-            
-            if signal == "LONG":
-                liquidation_price = current_price * (1 - 0.9 / self.leverage)
-            else:
-                liquidation_price = current_price * (1 + 0.9 / self.leverage)
-            
-            # Zapisz pozycję
-            position_id = order_id
-            self.positions[position_id] = {
-                'symbol': symbol,
-                'side': signal,
-                'entry_price': current_price,
-                'quantity': quantity,
-                'leverage': self.leverage,
-                'margin': margin_required,
-                'liquidation_price': liquidation_price,
-                'entry_time': datetime.now(),
-                'status': 'ACTIVE',
-                'unrealized_pnl': 0,
-                'confidence': confidence,
-                'llm_profile': self.active_profile,
-                'exit_plan': exit_plan,
-                'real_trading': self.real_trading
-            }
-            
-            # Aktualizuj saldo wirtualne
-            if not self.real_trading:
-                self.virtual_balance -= margin_required
-            
-            if signal == "LONG":
-                self.stats['long_trades'] += 1
-            else:
-                self.stats['short_trades'] += 1
-            
-            tp_distance = (exit_plan['take_profit'] - current_price) / current_price * 100
-            sl_distance = (current_price - exit_plan['stop_loss']) / current_price * 100
-            
-            self.logger.info(f"🎯 {self.active_profile} OPEN: {symbol} {signal} @ ${current_price:.4f}")
-            self.logger.info(f"   📊 Confidence: {confidence:.1%} | Size: ${position_value:.2f}")
-            self.logger.info(f"   🎯 TP: {exit_plan['take_profit']:.4f} ({tp_distance:+.2f}%)")
-            self.logger.info(f"   🛑 SL: {exit_plan['stop_loss']:.4f} ({sl_distance:+.2f}%)")
-            
-            return position_id
-        else:
-            self.logger.error(f"❌ FAILED to place order")
-            return None
-
-    def update_positions_pnl(self):
-        """Aktualizuje P&L wszystkich pozycji używając rzeczywistych danych z Bybit"""
-        total_unrealized = 0
-        total_margin = 0
-        total_confidence = 0
-        confidence_count = 0
-        
-        # Synchronizuj z Bybit jeśli używamy real trading
-        if self.real_trading:
-            self.sync_with_bybit()
-        else:
-            # Dla trybu wirtualnego, oblicz normalnie
-            for position in self.positions.values():
-                if position['status'] != 'ACTIVE':
-                    continue
+            for category in categories:
+                try:
+                    response = self.session.get_positions(category=category, symbol="")
+                    self.logger.info(f"📊 {category.upper()} positions - Code: {response['retCode']}")
                     
-                current_price = self.get_current_price(position['symbol'])
-                if not current_price:
-                    continue
-                    
-                if position['side'] == 'LONG':
-                    pnl_pct = (current_price - position['entry_price']) / position['entry_price']
-                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
-                else:
-                    pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
-                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
-                
-                position['unrealized_pnl'] = unrealized_pnl
-                position['current_price'] = current_price
-                
-                total_unrealized += unrealized_pnl
-                total_margin += position['margin']
-                total_confidence += position['confidence']
-                confidence_count += 1
+                    if response['retCode'] == 0:
+                        positions = response['result'].get('list', [])
+                        all_positions[category] = positions
+                        
+                        for pos in positions:
+                            symbol = pos.get('symbol', 'Unknown')
+                            size = float(pos.get('size', 0))
+                            side = pos.get('side', 'Unknown')
+                            self.logger.info(f"  📍 {category} {symbol} {side} - Size: {size}")
+                    else:
+                        self.logger.info(f"  ❌ {category}: {response.get('retMsg', 'No positions')}")
+                        
+                except Exception as e:
+                    self.logger.error(f"❌ Error checking {category}: {e}")
+            
+            return all_positions
+            
+        except Exception as e:
+            self.logger.error(f"❌ Debug error: {e}")
+            return {"error": str(e)}
         
-        # Użyj rzeczywistego salda konta
-        real_balance = self.get_account_balance()
-        if real_balance is not None:
-            account_value = real_balance + total_unrealized
-            available_cash = real_balance
-        else:
-            account_value = self.virtual_capital + total_unrealized
-            available_cash = self.virtual_balance
-        
-        # Dla real trading, użyj bezpośrednio z Bybit
-        if self.real_trading:
-            total_unrealized = self.get_bybit_unrealized_pnl()
-            self.dashboard_data['unrealized_pnl'] = total_unrealized
-            if real_balance:
-                account_value = real_balance + total_unrealized
-            else:
-                account_value = self.virtual_capital + total_unrealized
-        
-        self.dashboard_data['account_value'] = account_value
-        self.dashboard_data['available_cash'] = available_cash
-        
-        if confidence_count > 0:
-            self.dashboard_data['average_confidence'] = total_confidence / confidence_count
-        
-        if self.virtual_capital > 0:
-            self.stats['portfolio_utilization'] = total_margin / self.virtual_capital
-        
-        self.dashboard_data['last_update'] = datetime.now()
-
     def get_bybit_unrealized_pnl(self) -> float:
         """Pobiera unrealized P&L bezpośrednio z Bybit"""
         if not self.real_trading:
@@ -1014,6 +856,332 @@ def get_bybit_positions(self) -> List[Dict]:
                 position['symbol'] not in bybit_symbols):
                 position['status'] = 'CLOSED'
                 self.logger.info(f"🔄 Oznaczono pozycję jako zamkniętą: {position['symbol']}")
+
+    def get_available_futures_symbols(self):
+        """Pobiera listę dostępnych futures symboli używając pybit"""
+        if not self.session:
+            self.logger.error("❌ Brak sesji pybit")
+            return []
+            
+        try:
+            response = self.session.get_tickers(
+                category='linear'
+            )
+            
+            if response['retCode'] == 0:
+                symbols = [ticker['symbol'] for ticker in response['result']['list']]
+                self.logger.info(f"📊 Available futures symbols: {len(symbols)}")
+                # Pokaż tylko nasze aktywa
+                our_symbols = [s for s in symbols if s in self.assets]
+                self.logger.info(f"📈 Our trading symbols: {our_symbols}")
+                return symbols
+            return []
+        except Exception as e:
+            self.logger.error(f"❌ Error getting futures symbols: {e}")
+            return []
+
+    def calculate_llm_exit_plan(self, entry_price: float, confidence: float, side: str) -> Dict:
+        """Oblicza plan wyjścia w stylu LLM"""
+        profile = self.get_current_profile()
+        
+        if confidence > 0.7:
+            if side == "LONG":
+                take_profit = entry_price * 1.018
+                stop_loss = entry_price * 0.992
+            else:
+                take_profit = entry_price * 0.982
+                stop_loss = entry_price * 1.008
+        elif confidence > 0.5:
+            if side == "LONG":
+                take_profit = entry_price * 1.012
+                stop_loss = entry_price * 0.994
+            else:
+                take_profit = entry_price * 0.988
+                stop_loss = entry_price * 1.006
+        else:
+            if side == "LONG":
+                take_profit = entry_price * 1.008
+                stop_loss = entry_price * 0.996
+            else:
+                take_profit = entry_price * 0.992
+                stop_loss = entry_price * 1.004
+        
+        risk_multiplier = {
+            'LOW': 0.8,
+            'MEDIUM': 1.0,
+            'HIGH': 1.2
+        }.get(profile['risk_appetite'], 1.0)
+        
+        if side == "LONG":
+            take_profit = entry_price + (take_profit - entry_price) * risk_multiplier
+            stop_loss = entry_price - (entry_price - stop_loss) * risk_multiplier
+        else:
+            take_profit = entry_price - (entry_price - take_profit) * risk_multiplier
+            stop_loss = entry_price + (stop_loss - entry_price) * risk_multiplier
+        
+        return {
+            'take_profit': round(take_profit, 4),
+            'stop_loss': round(stop_loss, 4),
+            'invalidation': entry_price * 0.98 if side == "LONG" else entry_price * 1.02,
+            'max_holding_hours': random.randint(1, 6)
+        }
+
+    def should_enter_trade(self, symbol: str, signal: str, confidence: float) -> bool:
+        """Decyduje czy wejść w transakcję - POPRAWIONA LOGIKA"""
+        profile = self.get_current_profile()
+        
+        # Sprawdź minimalne confidence
+        if confidence < profile['min_confidence']:
+            self.logger.info(f"❌ Confidence too low for {symbol}: {confidence:.1%} < {profile['min_confidence']:.1%}")
+            return False
+        
+        # Sprawdź częstotliwość tradingu
+        frequency_chance = {
+            'LOW': 0.3,
+            'MEDIUM': 0.5,
+            'HIGH': 0.7
+        }.get(profile['trade_frequency'], 0.5)
+        
+        if random.random() > frequency_chance:
+            self.logger.info(f"⏸️ Trade frequency filter for {symbol}")
+            return False
+        
+        # Sprawdź czy mamy wystarczający kapitał
+        current_price = self.get_current_price(symbol)
+        if not current_price:
+            return False
+            
+        # Oblicz minimalny wymagany margin
+        min_position_value = 5
+        min_margin = min_position_value / self.leverage
+        
+        real_balance = self.get_account_balance()
+        if real_balance is None:
+            real_balance = self.virtual_balance
+            
+        if real_balance < min_margin:
+            self.logger.warning(f"💰 Insufficient balance for {symbol}")
+            return False
+        
+        # Sprawdź czy nie przekraczamy maksymalnej liczby pozycji
+        active_count = sum(1 for p in self.positions.values() if p['status'] == 'ACTIVE')
+        if active_count >= self.max_simultaneous_positions:
+            self.logger.info(f"📊 Max positions reached: {active_count}/{self.max_simultaneous_positions}")
+            return False
+            
+        return True
+
+    def check_minimum_balance(self, symbol: str, price: float) -> bool:
+        """Sprawdza czy saldo jest wystarczające dla danego assetu"""
+        # Minimalna wartość pozycji (przykładowo $10)
+        min_position_value = 5
+        
+        # Sprawdź czy można otworzyć minimalną pozycję
+        min_margin = min_position_value / self.leverage
+        
+        real_balance = self.get_account_balance()
+        if real_balance is None:
+            real_balance = self.virtual_balance
+        
+        if real_balance < min_margin:
+            self.logger.warning(f"💰 Insufficient balance for {symbol}. Available: ${real_balance:.2f}, Required: ${min_margin:.2f}")
+            return False
+        
+        return True
+    
+    def open_llm_position(self, symbol: str):
+        """Otwiera pozycję - POPRAWIONA LOGIKA"""
+        
+        self.logger.info(f"🔍 ANALYZING {symbol} for position opening...")
+        
+        try:
+            # 1. Pobierz cenę
+            current_price = self.get_current_price(symbol)
+            if not current_price:
+                self.logger.error(f"❌ No price for {symbol}")
+                return None
+            
+            self.logger.info(f"💰 Current price: ${current_price}")
+    
+            # 2. Wygeneruj sygnał
+            signal, confidence = self.generate_llm_signal(symbol)
+            
+            # 3. Sprawdź warunki wejścia
+            if not self.should_enter_trade(symbol, signal, confidence):
+                self.logger.info(f"⏸️ Trade conditions not met for {symbol}")
+                return None
+                
+            if signal == "HOLD":
+                self.logger.info(f"⏸️ Holding position for {symbol}")
+                return None
+    
+            # 4. Oblicz wielkość pozycji
+            quantity, position_value, margin_required = self.calculate_position_size(
+                symbol, current_price, confidence
+            )
+            
+            # 5. Sprawdź minimalną wartość zlecenia
+            if not self.check_minimum_order(symbol, quantity, current_price):
+                self.logger.warning(f"❌ Minimum order requirement not met for {symbol}")
+                return None
+    
+            # 6. Sprawdź dostępność kapitału
+            real_balance = self.get_account_balance()
+            if real_balance is None:
+                real_balance = self.virtual_balance
+                
+            if margin_required > real_balance * 0.8:  # Zostaw 20% bufor
+                self.logger.warning(f"💰 Insufficient margin for {symbol}. Required: ${margin_required:.2f}, Available: ${real_balance:.2f}")
+                return None
+    
+            # 7. SPRÓBUJ ZŁOŻYĆ ZLECENIE
+            self.logger.info(f"🚀 ATTEMPTING ORDER: {symbol} {signal} Qty: {quantity:.6f}")
+            order_id = self.place_bybit_order(symbol, signal, quantity, current_price)
+            
+            if order_id:
+                self.logger.info(f"🎉 SUCCESS! Order placed: {order_id}")
+                
+                # Zapisz pozycję
+                position_id = order_id
+                self.positions[position_id] = {
+                    'symbol': symbol,
+                    'side': signal,
+                    'entry_price': current_price,
+                    'quantity': quantity,
+                    'leverage': self.leverage,
+                    'entry_time': datetime.now(),
+                    'status': 'ACTIVE',
+                    'order_id': order_id,
+                    'real_trading': self.real_trading,
+                    'llm_profile': self.active_profile,
+                    'confidence': confidence,
+                    'margin': margin_required,
+                    'exit_plan': self.calculate_llm_exit_plan(current_price, confidence, signal),
+                    'liquidation_price': current_price * 0.9 if signal == 'LONG' else current_price * 1.1
+                }
+                
+                # Aktualizuj saldo wirtualne
+                if not self.real_trading:
+                    self.virtual_balance -= margin_required
+                
+                if signal == "LONG":
+                    self.stats['long_trades'] += 1
+                else:
+                    self.stats['short_trades'] += 1
+                    
+                return position_id
+            else:
+                self.logger.error(f"❌ FAILED to place order")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"💥 Error in position opening: {e}")
+            return None
+
+    def update_positions_pnl(self):
+        """Aktualizuje P&L wszystkich pozycji używając rzeczywistych danych z Bybit"""
+        total_unrealized = 0
+        total_margin = 0
+        total_confidence = 0
+        confidence_count = 0
+        
+        # Synchronizuj z Bybit jeśli używamy real trading
+        if self.real_trading:
+            self.sync_with_bybit()
+        else:
+            # Dla trybu wirtualnego, oblicz normalnie
+            for position in self.positions.values():
+                if position['status'] != 'ACTIVE':
+                    continue
+                    
+                current_price = self.get_current_price(position['symbol'])
+                if not current_price:
+                    continue
+                    
+                if position['side'] == 'LONG':
+                    pnl_pct = (current_price - position['entry_price']) / position['entry_price']
+                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+                else:
+                    pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
+                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+                
+                position['unrealized_pnl'] = unrealized_pnl
+                position['current_price'] = current_price
+                
+                total_unrealized += unrealized_pnl
+                total_margin += position['margin']
+                total_confidence += position['confidence']
+                confidence_count += 1
+        
+        # Użyj rzeczywistego salda konta
+        real_balance = self.get_account_balance()
+        if real_balance is not None:
+            account_value = real_balance + total_unrealized
+            available_cash = real_balance
+        else:
+            account_value = self.virtual_capital + total_unrealized
+            available_cash = self.virtual_balance
+        
+        # Dla real trading, użyj bezpośrednio z Bybit
+        if self.real_trading:
+            total_unrealized = self.get_bybit_unrealized_pnl()
+            self.dashboard_data['unrealized_pnl'] = total_unrealized
+            if real_balance:
+                account_value = real_balance + total_unrealized
+            else:
+                account_value = self.virtual_capital + total_unrealized
+        
+        self.dashboard_data['account_value'] = account_value
+        self.dashboard_data['available_cash'] = available_cash
+        
+        if confidence_count > 0:
+            self.dashboard_data['average_confidence'] = total_confidence / confidence_count
+        
+        if self.virtual_capital > 0:
+            self.stats['portfolio_utilization'] = total_margin / self.virtual_capital
+        
+        self.dashboard_data['last_update'] = datetime.now()
+
+    def debug_api_connection(self):
+        """Testuje połączenie z API i próbuje złożyć testowe zlecenie używając pybit"""
+        
+        self.logger.info("🔧 DEBUG API CONNECTION")
+        
+        # 1. Test pobierania cen
+        symbol = "BTCUSDT"
+        price = self.get_current_price(symbol)
+        if price:
+            self.logger.info(f"✅ Price OK: {symbol} = ${price}")
+        else:
+            self.logger.error(f"❌ Price FAILED")
+            return False
+    
+        # 2. Test pobierania salda
+        balance = self.get_account_balance()
+        if balance:
+            self.logger.info(f"✅ Balance OK: ${balance:.2f}")
+        else:
+            self.logger.error(f"❌ Balance FAILED")
+            return False
+    
+        # 3. Test ustawienia dźwigni
+        leverage_ok = self.set_leverage(symbol, self.leverage)
+        if leverage_ok:
+            self.logger.info(f"✅ Leverage OK: {self.leverage}x")
+        else:
+            self.logger.warning(f"⚠️ Leverage may have failed")
+    
+        # 4. Test złożenia MAŁEGO zlecenia
+        self.logger.info("🚀 TESTING ORDER PLACEMENT...")
+        test_quantity = 0.001  # Bardzo małe
+        order_id = self.place_bybit_order(symbol, "LONG", test_quantity, price)
+        
+        if order_id:
+            self.logger.info(f"🎉 ORDER TEST SUCCESS! ID: {order_id}")
+            return True
+        else:
+            self.logger.error("❌ ORDER TEST FAILED")
+            return False
 
     def check_exit_conditions(self):
         """Sprawdza warunki wyjścia z pozycji używając rzeczywistych cen z Bybit API"""
@@ -1155,102 +1323,109 @@ def get_bybit_positions(self) -> List[Dict]:
             return True
         return False
 
-    def debug_api_connection(self):
-        """Testuje połączenie z API i próbuje złożyć testowe zlecenie używając pybit"""
+    def debug_futures_setup(self):
+        """Debuguje konfigurację futures"""
+        self.logger.info("🔧 DEBUG FUTURES SETUP")
         
-        self.logger.info("🔧 DEBUG API CONNECTION")
+        # Sprawdź dostępne symbole
+        available_symbols = self.get_available_futures_symbols()
         
-        # 1. Test pobierania cen
-        symbol = "BTCUSDT"
-        price = self.get_current_price(symbol)
-        if price:
-            self.logger.info(f"✅ Price OK: {symbol} = ${price}")
-        else:
-            self.logger.error(f"❌ Price FAILED")
-            return False
-    
-        # 2. Test pobierania salda
-        balance = self.get_account_balance()
-        if balance:
-            self.logger.info(f"✅ Balance OK: ${balance:.2f}")
-        else:
-            self.logger.error(f"❌ Balance FAILED")
-            return False
-    
-        # 3. Test ustawienia dźwigni
-        leverage_ok = self.set_leverage(symbol, self.leverage)
-        if leverage_ok:
-            self.logger.info(f"✅ Leverage OK: {self.leverage}x")
-        else:
-            self.logger.warning(f"⚠️ Leverage may have failed")
-    
-        # 4. Test złożenia MAŁEGO zlecenia
-        self.logger.info("🚀 TESTING ORDER PLACEMENT...")
-        test_quantity = 0.001  # Bardzo małe
-        order_id = self.place_bybit_order(symbol, "LONG", test_quantity, price)
+        # Sprawdź ceny dla naszych symboli
+        for symbol in self.assets:
+            price = self.get_current_price(symbol)
+            if price:
+                self.logger.info(f"✅ {symbol}: ${price}")
+            else:
+                self.logger.error(f"❌ {symbol}: NO PRICE")
         
-        if order_id:
-            self.logger.info(f"🎉 ORDER TEST SUCCESS! ID: {order_id}")
-            return True
-        else:
-            self.logger.error("❌ ORDER TEST FAILED")
-            return False
+        # Sprawdź API status
+        api_status = self.check_api_status()
+        self.logger.info(f"🔗 API Status: {api_status}")
 
-    def sync_all_positions_with_bybit(self):
-        """Kompletna synchronizacja pozycji z Bybit"""
+    def check_api_status(self) -> Dict:
+        """Sprawdza status połączenia z Bybit API - ROZSZERZONA"""
+        status = {
+            'real_trading': self.real_trading,
+            'api_connected': False,
+            'balance_available': False,
+            'testnet': self.testnet,
+            'available_categories': [],
+            'message': '',
+            'balance': 0
+        }
+        
         if not self.real_trading:
-            self.logger.info("🔄 SYNC: Virtual mode - no Bybit sync needed")
-            return
-            
-        self.logger.info("🔄 FULL SYNC: Synchronizing all positions with Bybit...")
+            status['message'] = '🔄 Tryb wirtualny - brak kluczy API'
+            status['balance'] = self.virtual_balance
+            return status
         
         try:
-            # 1. Pobierz wszystkie pozycje z Bybit
-            bybit_positions = self.get_bybit_positions()
-            self.logger.info(f"📊 BYBIT POSITIONS: Found {len(bybit_positions)} positions on Bybit")
+            # Sprawdź dostępne kategorie
+            available_categories = self.check_available_categories()
+            status['available_categories'] = available_categories
             
-            # 2. Wyczyść stare pozycje i dodaj nowe z Bybit
-            old_count = len(self.positions)
-            self.positions = {}  # Reset lokalnych pozycji
+            # Spróbuj pobrać saldo
+            balance = self.get_account_balance()
             
-            for i, bybit_pos in enumerate(bybit_positions):
-                position_id = f"bybit_sync_{i}_{int(time.time())}"
-                
-                current_price = self.get_current_price(bybit_pos['symbol'])
-                if not current_price:
-                    current_price = bybit_pos['entry_price']
-                    self.logger.warning(f"⚠️ Could not get current price for {bybit_pos['symbol']}, using entry price")
-                
-                # Oblicz unrealized P&L
-                unrealized_pnl = bybit_pos.get('unrealised_pnl', 0)
-                
-                self.positions[position_id] = {
-                    'symbol': bybit_pos['symbol'],
-                    'side': bybit_pos['side'],
-                    'entry_price': bybit_pos['entry_price'],
-                    'quantity': bybit_pos['size'],
-                    'leverage': bybit_pos['leverage'],
-                    'entry_time': bybit_pos.get('created_time', datetime.now()),
-                    'status': 'ACTIVE',
-                    'order_id': f"bybit_{bybit_pos['symbol']}",
-                    'real_trading': True,
-                    'llm_profile': self.active_profile,
-                    'confidence': 0.5,
-                    'margin': bybit_pos.get('position_margin', bybit_pos['size'] * bybit_pos['entry_price'] / bybit_pos['leverage']),
-                    'exit_plan': self.calculate_llm_exit_plan(bybit_pos['entry_price'], 0.5, bybit_pos['side']),
-                    'liquidation_price': bybit_pos.get('liq_price'),
-                    'unrealized_pnl': unrealized_pnl,
-                    'current_price': current_price
-                }
-                
-                self.logger.info(f"✅ SYNCED: {bybit_pos['symbol']} {bybit_pos['side']} - Size: {bybit_pos['size']}, Entry: ${bybit_pos['entry_price']}, PnL: ${unrealized_pnl:.2f}")
-            
-            self.logger.info(f"🎯 SYNC COMPLETE: {old_count} -> {len(self.positions)} positions synchronized with Bybit")
-            
+            if balance is not None:
+                status['api_connected'] = True
+                status['balance_available'] = True
+                status['balance'] = balance
+                status['message'] = f'✅'
+            else:
+                status['api_connected'] = False
+                status['message'] = '❌ Błąd połączenia z Bybit - sprawdź klucze API'
+                    
         except Exception as e:
-            self.logger.error(f"❌ SYNC ERROR: {e}")
-            import traceback
-            self.logger.error(f"❌ Stack trace: {traceback.format_exc()}")
+            status['api_connected'] = False
+            status['message'] = f'❌ Błąd API: {str(e)}'
+        
+        return status
+
+    def get_active_positions_from_bybit(self) -> List[Dict]:
+        """Pobiera aktywne pozycje bezpośrednio z Bybit i formatuje dla dashboardu"""
+        if not self.real_trading:
+            return []
+            
+        bybit_positions = self.get_bybit_positions()
+        active_positions = []
+        
+        for pos in bybit_positions:
+            current_price = pos.get('mark_price') or self.get_current_price(pos['symbol'])
+            if not current_price:
+                continue
+                
+            # Oblicz odległości do TP/SL (używamy domyślnych wartości dla zsynchronizowanych pozycji)
+            exit_plan = self.calculate_llm_exit_plan(pos['entry_price'], 0.5, pos['side'])
+            
+            if pos['side'] == 'LONG':
+                tp_distance_pct = ((exit_plan['take_profit'] - current_price) / current_price) * 100
+                sl_distance_pct = ((current_price - exit_plan['stop_loss']) / current_price) * 100
+            else:
+                tp_distance_pct = ((current_price - exit_plan['take_profit']) / current_price) * 100
+                sl_distance_pct = ((exit_plan['stop_loss'] - current_price) / current_price) * 100
+            
+            active_positions.append({
+                'position_id': f"bybit_{pos['symbol']}_{int(time.time())}",
+                'symbol': pos['symbol'],
+                'side': pos['side'],
+                'entry_price': pos['entry_price'],
+                'current_price': current_price,
+                'quantity': pos['size'],
+                'leverage': pos['leverage'],
+                'margin': pos['position_margin'],
+                'unrealized_pnl': pos['unrealised_pnl'],
+                'confidence': 0.5,  # Domyślne dla zsynchronizowanych pozycji
+                'llm_profile': self.active_profile,
+                'entry_time': pos['created_time'].strftime('%H:%M:%S'),
+                'exit_plan': exit_plan,
+                'tp_distance_pct': round(tp_distance_pct, 2),
+                'sl_distance_pct': round(sl_distance_pct, 2),
+                'real_trading': True
+            })
+        
+        self.logger.info(f"📊 Pobrano {len(active_positions)} aktywnych pozycji z Bybit")
+        return active_positions
 
     def get_dashboard_data(self):
         """Przygotowuje dane dla dashboardu używając rzeczywistych danych z Bybit"""
@@ -1350,11 +1525,12 @@ def get_bybit_positions(self) -> List[Dict]:
             
         self.logger.info(f"📊 Dashboard data - Positions: {len(active_positions)}, Trades: {len(recent_trades)}, Unrealized P&L: ${total_unrealized_pnl:.2f}")    
         
+        # DODAJ BRAKUJĄCE POLA DLA HTML
         return {
             'account_summary': {
                 'total_value': round(current_balance + total_unrealized_pnl, 2) if current_balance else 0,
                 'available_cash': round(current_balance, 2) if current_balance else 0,
-                'total_fees': round(self.stats.get('total_fees', 0), 2),
+                'total_fees': round(self.stats.get('total_fees', 0), 2),  # DODANE
                 'net_realized': round(self.dashboard_data['net_realized'], 2),
                 'unrealized_pnl': round(total_unrealized_pnl, 2),
                 'real_trading': self.real_trading,
@@ -1369,7 +1545,10 @@ def get_bybit_positions(self) -> List[Dict]:
                 'avg_holding_hours': round(self.stats['avg_holding_time'], 2),
                 'portfolio_utilization': round(self.stats['portfolio_utilization'] * 100, 1),
                 'portfolio_diversity': round(self.get_portfolio_diversity() * 100, 1),
-                'avg_confidence': round(self.dashboard_data['average_confidence'] * 100, 1)
+                'avg_confidence': round(self.dashboard_data['average_confidence'] * 100, 1),
+                # DODANE POLA DLA HTML
+                'won_long_trades': self.stats.get('won_long_trades', 0),
+                'won_short_trades': self.stats.get('won_short_trades', 0)
             },
             'llm_config': {
                 'active_profile': self.active_profile,
@@ -1382,45 +1561,11 @@ def get_bybit_positions(self) -> List[Dict]:
             },
             'api_status': api_status,
             'confidence_levels': confidence_levels,
-            'active_positions': active_positions,
+            'active_positions': active_positions,  # To powinno być już poprawne
             'recent_trades': recent_trades,
             'total_unrealized_pnl': total_unrealized_pnl,
             'last_update': datetime.now().isoformat()
         }
-
-    def check_api_status(self) -> Dict:
-        """Sprawdza status połączenia z Bybit API"""
-        status = {
-            'real_trading': self.real_trading,
-            'api_connected': False,
-            'balance_available': False,
-            'testnet': self.testnet,
-            'message': '',
-            'balance': 0
-        }
-        
-        if not self.real_trading:
-            status['message'] = '🔄 Tryb wirtualny - brak kluczy API'
-            status['balance'] = self.virtual_balance
-            return status
-        
-        try:
-            # Spróbuj pobrać saldo
-            balance = self.get_account_balance()
-            
-            if balance is not None:
-                status['api_connected'] = True
-                status['balance_available'] = True
-                status['balance'] = balance
-            else:
-                status['api_connected'] = False
-                status['message'] = '❌ Błąd połączenia z Bybit - sprawdź klucze API'
-                    
-        except Exception as e:
-            status['api_connected'] = False
-            status['message'] = f'❌ Błąd API: {str(e)}'
-        
-        return status
 
     def save_chart_data(self, chart_data: Dict):
         """Zapisuje dane wykresu"""
@@ -1431,6 +1576,15 @@ def get_bybit_positions(self) -> List[Dict]:
             self.logger.error(f"❌ Error saving chart data: {e}")
             return False
 
+    def debug_bybit_positions(self):
+        """Debugowanie pozycji na Bybit"""
+        self.logger.info("🔍 DEBUG: Checking Bybit positions...")
+        positions = self.get_bybit_positions()
+        self.logger.info(f"🔍 DEBUG: Found {len(positions)} positions on Bybit:")
+        for pos in positions:
+            self.logger.info(f"  - {pos['symbol']} {pos['side']} Size: {pos['size']} Entry: ${pos['entry_price']}")
+        return positions
+        
     def load_chart_data(self) -> Dict:
         """Ładuje dane wykresu"""
         return self.chart_data
@@ -1464,7 +1618,7 @@ def get_bybit_positions(self) -> List[Dict]:
                 for position_id, exit_reason, exit_price in positions_to_close:
                     self.close_position(position_id, exit_reason, exit_price)
                 
-                # 3. Sprawdź możliwości wejścia - DOKŁADNIE JAK W DRUGIM BOCIE
+                # 3. Sprawdź możliwości wejścia
                 active_symbols = [p['symbol'] for p in self.positions.values() 
                                 if p['status'] == 'ACTIVE']
                 active_count = len(active_symbols)
@@ -1605,5 +1759,5 @@ if __name__ == '__main__':
     print("📍 Dashboard available at: http://localhost:5000")
     print("🧠 LLM Profiles: Claude, Gemini, GPT, Qwen")
     print("📈 Trading assets: BTC, ETH, SOL, XRP, BNB, DOGE")
-    print("💹 Using REAL Bybit Futures API with REAL MONEY")
+    print("💹 Using REAL-TIME prices from Bybit API only")
     app.run(debug=True, host='0.0.0.0', port=5000)
