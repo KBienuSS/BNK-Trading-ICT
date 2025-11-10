@@ -584,7 +584,7 @@ class LLMTradingBot:
         if not self.session:
             self.logger.error("❌ Brak sesji pybit")
             return []
-
+    
         try:
             response = self.session.get_positions(
                 category="linear",
@@ -595,6 +595,9 @@ class LLMTradingBot:
                 active_positions = []
                 for pos in response['result']['list']:
                     if float(pos['size']) > 0:  # Tylko pozycje z wielkością > 0
+                        # Pobierz dodatkowe informacje o pozycji
+                        created_time = datetime.fromtimestamp(int(pos['createdTime']) / 1000) if pos.get('createdTime') else datetime.now()
+                        
                         active_positions.append({
                             'symbol': pos['symbol'],
                             'side': 'LONG' if pos['side'] == 'Buy' else 'SHORT',
@@ -605,7 +608,8 @@ class LLMTradingBot:
                             'liq_price': float(pos['liqPrice']) if pos['liqPrice'] else None,
                             'position_value': float(pos['positionValue']),
                             'position_margin': float(pos['positionIM']),
-                            'created_time': datetime.fromtimestamp(int(pos['createdTime']) / 1000) if pos.get('createdTime') else datetime.now()
+                            'created_time': created_time,
+                            'mark_price': float(pos['markPrice']) if pos.get('markPrice') else float(pos['avgPrice'])
                         })
                 return active_positions
             else:
@@ -615,7 +619,7 @@ class LLMTradingBot:
         except Exception as e:
             self.logger.error(f"❌ Error getting Bybit positions: {e}")
             return []
-
+        
     def get_bybit_unrealized_pnl(self) -> float:
         """Pobiera unrealized P&L bezpośrednio z Bybit"""
         if not self.real_trading:
@@ -637,7 +641,7 @@ class LLMTradingBot:
         if not self.session:
             self.logger.error("❌ Brak sesji pybit")
             return 0.0
-
+    
         try:
             response = self.session.get_positions(
                 category="linear",
@@ -1259,7 +1263,7 @@ class LLMTradingBot:
         active_positions = []
         
         for pos in bybit_positions:
-            current_price = self.get_current_price(pos['symbol'])
+            current_price = pos.get('mark_price', self.get_current_price(pos['symbol']))
             if not current_price:
                 continue
                 
@@ -1274,7 +1278,7 @@ class LLMTradingBot:
                 sl_distance_pct = ((exit_plan['stop_loss'] - current_price) / current_price) * 100
             
             active_positions.append({
-                'position_id': f"bybit_{pos['symbol']}",
+                'position_id': f"bybit_{pos['symbol']}_{int(time.time())}",
                 'symbol': pos['symbol'],
                 'side': pos['side'],
                 'entry_price': pos['entry_price'],
@@ -1287,13 +1291,14 @@ class LLMTradingBot:
                 'llm_profile': self.active_profile,
                 'entry_time': pos['created_time'].strftime('%H:%M:%S'),
                 'exit_plan': exit_plan,
-                'tp_distance_pct': tp_distance_pct,
-                'sl_distance_pct': sl_distance_pct,
+                'tp_distance_pct': round(tp_distance_pct, 2),
+                'sl_distance_pct': round(sl_distance_pct, 2),
                 'real_trading': True,
                 'liq_price': pos['liq_price'],
                 'position_value': pos['position_value']
             })
         
+        self.logger.info(f"📊 Pobrano {len(active_positions)} aktywnych pozycji z Bybit")
         return active_positions
 
     def get_dashboard_data(self):
@@ -1346,11 +1351,12 @@ class LLMTradingBot:
                         'llm_profile': position['llm_profile'],
                         'entry_time': position['entry_time'].strftime('%H:%M:%S'),
                         'exit_plan': position['exit_plan'],
-                        'tp_distance_pct': tp_distance_pct,
-                        'sl_distance_pct': sl_distance_pct,
+                        'tp_distance_pct': round(tp_distance_pct, 2),
+                        'sl_distance_pct': round(sl_distance_pct, 2),
                         'real_trading': position.get('real_trading', False)
                     })
         
+        # Reszta metody pozostaje bez zmian...
         # Oblicz confidence levels dla każdego assetu
         confidence_levels = {}
         for symbol in self.assets:
