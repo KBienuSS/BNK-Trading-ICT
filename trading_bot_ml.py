@@ -602,7 +602,10 @@ class LLMTradingBot:
                             'entry_price': float(pos['avgPrice']),
                             'leverage': float(pos['leverage']),
                             'unrealised_pnl': float(pos['unrealisedPnl']),
-                            'liq_price': float(pos['liqPrice']) if pos['liqPrice'] else None
+                            'liq_price': float(pos['liqPrice']) if pos['liqPrice'] else None,
+                            'position_value': float(pos['positionValue']),
+                            'position_margin': float(pos['positionIM']),
+                            'created_time': datetime.fromtimestamp(int(pos['createdTime']) / 1000) if pos.get('createdTime') else datetime.now()
                         })
                 return active_positions
             else:
@@ -676,11 +679,51 @@ class LLMTradingBot:
             real_unrealized_pnl = self.get_bybit_unrealized_pnl()
             self.dashboard_data['unrealized_pnl'] = real_unrealized_pnl
             
+            # Synchronizuj lokalne pozycje z Bybit
+            self.sync_local_positions_with_bybit(bybit_positions)
+            
             # Log synchronizacji
             self.logger.info(f"🔄 Zsynchronizowano z Bybit - Pozycje: {len(bybit_positions)}, Saldo: ${real_balance:.2f}, Unrealized P&L: ${real_unrealized_pnl:.2f}")
             
         except Exception as e:
             self.logger.error(f"❌ Error syncing with Bybit: {e}")
+
+    def sync_local_positions_with_bybit(self, bybit_positions: List[Dict]):
+        """Synchronizuje lokalne pozycje z pozycjami z Bybit"""
+        # Znajdź pozycje, które są na Bybit ale nie ma ich lokalnie
+        bybit_symbols = {pos['symbol'] for pos in bybit_positions}
+        local_active_symbols = {pos['symbol'] for pos in self.positions.values() if pos['status'] == 'ACTIVE'}
+        
+        # Dodaj brakujące pozycje do lokalnego śledzenia
+        for bybit_pos in bybit_positions:
+            if bybit_pos['symbol'] not in local_active_symbols:
+                position_id = f"bybit_sync_{bybit_pos['symbol']}_{int(time.time())}"
+                self.positions[position_id] = {
+                    'symbol': bybit_pos['symbol'],
+                    'side': bybit_pos['side'],
+                    'entry_price': bybit_pos['entry_price'],
+                    'quantity': bybit_pos['size'],
+                    'leverage': bybit_pos['leverage'],
+                    'entry_time': bybit_pos['created_time'],
+                    'status': 'ACTIVE',
+                    'order_id': f"bybit_sync_{bybit_pos['symbol']}",
+                    'real_trading': True,
+                    'llm_profile': self.active_profile,
+                    'confidence': 0.5,  # Domyślne confidence dla zsynchronizowanych pozycji
+                    'margin': bybit_pos['position_margin'],
+                    'exit_plan': self.calculate_llm_exit_plan(bybit_pos['entry_price'], 0.5, bybit_pos['side']),
+                    'liquidation_price': bybit_pos['liq_price'],
+                    'unrealized_pnl': bybit_pos['unrealised_pnl'],
+                    'current_price': self.get_current_price(bybit_pos['symbol'])
+                }
+                self.logger.info(f"🔄 Dodano zsynchronizowaną pozycję z Bybit: {bybit_pos['symbol']} {bybit_pos['side']}")
+        
+        # Oznacz pozycje jako zamknięte jeśli nie ma ich na Bybit
+        for position_id, position in list(self.positions.items()):
+            if (position['status'] == 'ACTIVE' and position.get('real_trading', False) and 
+                position['symbol'] not in bybit_symbols):
+                position['status'] = 'CLOSED'
+                self.logger.info(f"🔄 Oznaczono pozycję jako zamkniętą: {position['symbol']}")
 
     def get_available_futures_symbols(self):
         """Pobiera listę dostępnych futures symboli używając pybit"""
@@ -1207,71 +1250,106 @@ class LLMTradingBot:
         
         return status
 
+    def get_active_positions_from_bybit(self) -> List[Dict]:
+        """Pobiera aktywne pozycje bezpośrednio z Bybit i formatuje dla dashboardu"""
+        if not self.real_trading:
+            return []
+            
+        bybit_positions = self.get_bybit_positions()
+        active_positions = []
+        
+        for pos in bybit_positions:
+            current_price = self.get_current_price(pos['symbol'])
+            if not current_price:
+                continue
+                
+            # Oblicz odległości do TP/SL (używamy domyślnych wartości dla zsynchronizowanych pozycji)
+            exit_plan = self.calculate_llm_exit_plan(pos['entry_price'], 0.5, pos['side'])
+            
+            if pos['side'] == 'LONG':
+                tp_distance_pct = ((exit_plan['take_profit'] - current_price) / current_price) * 100
+                sl_distance_pct = ((current_price - exit_plan['stop_loss']) / current_price) * 100
+            else:
+                tp_distance_pct = ((current_price - exit_plan['take_profit']) / current_price) * 100
+                sl_distance_pct = ((exit_plan['stop_loss'] - current_price) / current_price) * 100
+            
+            active_positions.append({
+                'position_id': f"bybit_{pos['symbol']}",
+                'symbol': pos['symbol'],
+                'side': pos['side'],
+                'entry_price': pos['entry_price'],
+                'current_price': current_price,
+                'quantity': pos['size'],
+                'leverage': pos['leverage'],
+                'margin': pos['position_margin'],
+                'unrealized_pnl': pos['unrealised_pnl'],
+                'confidence': 0.5,  # Domyślne dla zsynchronizowanych pozycji
+                'llm_profile': self.active_profile,
+                'entry_time': pos['created_time'].strftime('%H:%M:%S'),
+                'exit_plan': exit_plan,
+                'tp_distance_pct': tp_distance_pct,
+                'sl_distance_pct': sl_distance_pct,
+                'real_trading': True,
+                'liq_price': pos['liq_price'],
+                'position_value': pos['position_value']
+            })
+        
+        return active_positions
+
     def get_dashboard_data(self):
         """Przygotowuje dane dla dashboardu używając rzeczywistych danych z Bybit"""
         # Sprawdź status API i pobierz saldo
         api_status = self.check_api_status()
         
-        active_positions = []
-        total_unrealized_pnl = 0
-        
         # Pobierz unrealized P&L bezpośrednio z Bybit dla real trading
-        if self.real_trading:
-            total_unrealized_pnl = self.get_bybit_unrealized_pnl()
-            self.dashboard_data['unrealized_pnl'] = total_unrealized_pnl
+        total_unrealized_pnl = self.get_bybit_unrealized_pnl()
+        self.dashboard_data['unrealized_pnl'] = total_unrealized_pnl
         
-        for position_id, position in self.positions.items():
-            if position['status'] == 'ACTIVE':
-                current_price = position.get('current_price', self.get_current_price(position['symbol']))
-                if not current_price:
-                    continue
-                
-                # Dla real trading, użyj danych z Bybit, dla virtual oblicz
-                if self.real_trading:
-                    # Pobierz aktualne dane pozycji z Bybit
-                    bybit_positions = self.get_bybit_positions()
-                    unrealized_pnl = 0
-                    for bp in bybit_positions:
-                        if bp['symbol'] == position['symbol']:
-                            unrealized_pnl = bp['unrealised_pnl']
-                            break
-                else:
+        # Pobierz aktywne pozycje bezpośrednio z Bybit dla real trading
+        if self.real_trading:
+            active_positions = self.get_active_positions_from_bybit()
+        else:
+            # Dla trybu wirtualnego, użyj lokalnych pozycji
+            active_positions = []
+            for position_id, position in self.positions.items():
+                if position['status'] == 'ACTIVE':
+                    current_price = position.get('current_price', self.get_current_price(position['symbol']))
+                    if not current_price:
+                        continue
+                    
                     if position['side'] == 'LONG':
                         pnl_pct = (current_price - position['entry_price']) / position['entry_price']
                         unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
                     else:
                         pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
                         unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
-                
-                # Oblicz odległości do TP/SL
-                if position['side'] == 'LONG':
-                    tp_distance_pct = ((position['exit_plan']['take_profit'] - current_price) / current_price) * 100
-                    sl_distance_pct = ((current_price - position['exit_plan']['stop_loss']) / current_price) * 100
-                else:
-                    tp_distance_pct = ((current_price - position['exit_plan']['take_profit']) / current_price) * 100
-                    sl_distance_pct = ((position['exit_plan']['stop_loss'] - current_price) / current_price) * 100
-                
-                active_positions.append({
-                    'position_id': position_id,
-                    'symbol': position['symbol'],
-                    'side': position['side'],
-                    'entry_price': position['entry_price'],
-                    'current_price': current_price,
-                    'quantity': position['quantity'],
-                    'leverage': position['leverage'],
-                    'margin': position['margin'],
-                    'unrealized_pnl': unrealized_pnl,
-                    'confidence': position['confidence'],
-                    'llm_profile': position['llm_profile'],
-                    'entry_time': position['entry_time'].strftime('%H:%M:%S'),
-                    'exit_plan': position['exit_plan'],
-                    'tp_distance_pct': tp_distance_pct,
-                    'sl_distance_pct': sl_distance_pct,
-                    'real_trading': position.get('real_trading', False)
-                })
-                
-                if not self.real_trading:
-                    total_unrealized_pnl += unrealized_pnl
+                    
+                    # Oblicz odległości do TP/SL
+                    if position['side'] == 'LONG':
+                        tp_distance_pct = ((position['exit_plan']['take_profit'] - current_price) / current_price) * 100
+                        sl_distance_pct = ((current_price - position['exit_plan']['stop_loss']) / current_price) * 100
+                    else:
+                        tp_distance_pct = ((current_price - position['exit_plan']['take_profit']) / current_price) * 100
+                        sl_distance_pct = ((position['exit_plan']['stop_loss'] - current_price) / current_price) * 100
+                    
+                    active_positions.append({
+                        'position_id': position_id,
+                        'symbol': position['symbol'],
+                        'side': position['side'],
+                        'entry_price': position['entry_price'],
+                        'current_price': current_price,
+                        'quantity': position['quantity'],
+                        'leverage': position['leverage'],
+                        'margin': position['margin'],
+                        'unrealized_pnl': unrealized_pnl,
+                        'confidence': position['confidence'],
+                        'llm_profile': position['llm_profile'],
+                        'entry_time': position['entry_time'].strftime('%H:%M:%S'),
+                        'exit_plan': position['exit_plan'],
+                        'tp_distance_pct': tp_distance_pct,
+                        'sl_distance_pct': sl_distance_pct,
+                        'real_trading': position.get('real_trading', False)
+                    })
         
         # Oblicz confidence levels dla każdego assetu
         confidence_levels = {}
