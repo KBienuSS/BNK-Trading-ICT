@@ -34,7 +34,7 @@ logging.basicConfig(
 )
 
 class LLMTradingBot:
-    def __init__(self, api_key=None, api_secret=None, initial_capital=10000, leverage=10):
+    def __init__(self, api_key=None, api_secret=None, initial_capital=10000, leverage=10, real_trading=False):
         # Inicjalizacja loggera NAJPIERW
         self.logger = logging.getLogger(__name__)
         
@@ -46,31 +46,32 @@ class LLMTradingBot:
         
         if self.testnet:
             self.base_url = "https://api-testnet.bybit.com"
-
-            # INICJALIZacja SESJI BYBIT - DODAJ TEN FRAGMENT
+    
+        # TRYB TRADINGU - DODANY PARAMETR real_trading
+        self.real_trading = real_trading
+        
+        # Sprawdź czy klucze API są dostępne dla real trading
+        if self.real_trading and (not self.api_key or not self.api_secret):
+            self.logger.warning("⚠️ Brak kluczy API Bybit - przełączam na tryb wirtualny")
+            self.real_trading = False
+        
+        # INICJALIZACJA SESJI BYBIT - POPRAWIONA
         self.session = None
         if self.real_trading:
             try:
                 from pybit.unified_trading import HTTP
                 self.session = HTTP(
-                    testnet=False,  # False dla real trading
+                    testnet=self.testnet,
                     api_key=self.api_key,
                     api_secret=self.api_secret,
                 )
-                self.logger.info("✅ Pybit session initialized successfully")
+                self.logger.info("✅ Pybit session initialized successfully for REAL TRADING")
             except Exception as e:
                 self.logger.error(f"❌ Failed to initialize pybit session: {e}")
                 self.session = None
+                self.real_trading = False  # Fallback to virtual mode
         else:
             self.logger.info("🔄 Virtual trading mode - no pybit session needed")
-        
-        # Sprawdź czy klucze API są dostępne
-        if not self.api_key or not self.api_secret:
-            self.logger.warning("⚠️ Brak kluczy API Bybit - bot będzie działał w trybie wirtualnym")
-            self.real_trading = False
-        else:
-            self.real_trading = True
-            self.logger.info("🔑 Klucze API Bybit załadowane - REAL TRADING ENABLED")
         
         # Kapitał wirtualny (fallback)
         self.initial_capital = initial_capital
@@ -129,7 +130,7 @@ class LLMTradingBot:
         self.max_simultaneous_positions = 4
         self.assets = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'DOGEUSDT']
         
-        # AUTOMATYCZNE WYKRYWANIE DOSTĘPNYCH SYMBOLI
+        # AUTOMATYCZNE WYKRYWANIE DOSTĘPNYCH SYMBOLI - POPRAWIONE
         self.available_symbols = self.get_available_futures_symbols()
         if self.available_symbols:
             self.logger.info(f"📊 Available trading symbols: {self.available_symbols}")
@@ -171,18 +172,18 @@ class LLMTradingBot:
             'values': []
         }
         
-        # Inicjalizacja sesji HTTP dla pybit
-        self.session = None
-        if self.real_trading and PYBIT_AVAILABLE:
+        # DODATKOWA INICJALIZACJA SESJI DLA KOMPATYBILNOŚCI
+        if self.real_trading and not self.session and PYBIT_AVAILABLE:
             try:
+                from pybit.unified_trading import HTTP
                 self.session = HTTP(
                     testnet=self.testnet,
                     api_key=self.api_key,
                     api_secret=self.api_secret,
                 )
-                self.logger.info("✅ Sesja HTTP pybit zainicjalizowana")
+                self.logger.info("✅ Sesja HTTP pybit zainicjalizowana (backup)")
             except Exception as e:
-                self.logger.error(f"❌ Błąd inicjalizacji sesji pybit: {e}")
+                self.logger.error(f"❌ Błąd inicjalizacji sesji pybit (backup): {e}")
                 self.session = None
         
         self.logger.info("🧠 LLM-STYLE TRADING BOT - Alpha Arena Inspired")
@@ -190,7 +191,8 @@ class LLMTradingBot:
         self.logger.info(f"🎯 Active LLM Profile: {self.active_profile}")
         self.logger.info(f"📈 Trading assets: {', '.join(self.assets)}")
         self.logger.info(f"🔗 Real Trading: {self.real_trading}")
-
+        self.logger.info(f"🔑 Session initialized: {self.session is not None}")
+    
     def set_leverage(self, symbol: str, leverage: int) -> bool:
         """Ustawia dźwignię dla symbolu używając pybit"""
         if not self.real_trading:
