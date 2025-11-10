@@ -415,7 +415,8 @@ class LLMTradingBot:
                     'momentum': random.uniform(-0.02, 0.02),
                     'volatility': 0.001,
                     'rsi': 50,
-                    'volume_trend': 0
+                    'volume_trend': 0,
+                    'trend_strength': 0
                 }
             
             history = self.price_history[symbol]
@@ -460,11 +461,21 @@ class LLMTradingBot:
             else:
                 volume_trend = 0
             
+            # Trend strength (za pomocą prostej regresji liniowej)
+            if len(prices) >= 10:
+                x = np.arange(len(prices[-10:]))
+                y = np.array(prices[-10:])
+                slope = np.polyfit(x, y, 1)[0]
+                trend_strength = abs(slope) / np.mean(prices[-10:])
+            else:
+                trend_strength = 0
+            
             return {
                 'momentum': momentum,
                 'volatility': volatility,
                 'rsi': rsi,
-                'volume_trend': volume_trend
+                'volume_trend': volume_trend,
+                'trend_strength': trend_strength
             }
             
         except Exception as e:
@@ -473,7 +484,8 @@ class LLMTradingBot:
                 'momentum': random.uniform(-0.02, 0.02),
                 'volatility': 0.001,
                 'rsi': 50,
-                'volume_trend': 0
+                'volume_trend': 0,
+                'trend_strength': 0
             }
 
     def generate_llm_signal(self, symbol: str) -> Tuple[str, float]:
@@ -485,6 +497,7 @@ class LLMTradingBot:
         volatility = indicators['volatility']
         rsi = indicators['rsi']
         volume_trend = indicators['volume_trend']
+        trend_strength = indicators['trend_strength']
         
         # Bazowe confidence z profilu
         base_confidence = profile['confidence_bias']
@@ -514,6 +527,10 @@ class LLMTradingBot:
         
         # Volume trend modifier
         if volume_trend > 0.1:  # Wzrost wolumenu
+            confidence_modifiers += 0.05
+        
+        # Trend strength modifier
+        if trend_strength > optimal_volatility:
             confidence_modifiers += 0.05
         
         # Final confidence z losowością
@@ -743,7 +760,7 @@ class LLMTradingBot:
             self.logger.error(f"❌ Stack trace: {traceback.format_exc()}")
             return []
 
-    def calculate_llm_exit_plan(self, entry_price: float, confidence: float, side: str) -> Dict:
+   def calculate_llm_exit_plan(self, entry_price: float, confidence: float, side: str) -> Dict:
         """Oblicza plan wyjścia w stylu LLM - ULEPSZONY"""
         profile = self.get_current_profile()
         
