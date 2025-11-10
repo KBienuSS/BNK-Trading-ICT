@@ -46,6 +46,23 @@ class LLMTradingBot:
         
         if self.testnet:
             self.base_url = "https://api-testnet.bybit.com"
+
+            # INICJALIZacja SESJI BYBIT - DODAJ TEN FRAGMENT
+        self.session = None
+        if self.real_trading:
+            try:
+                from pybit.unified_trading import HTTP
+                self.session = HTTP(
+                    testnet=False,  # False dla real trading
+                    api_key=self.api_key,
+                    api_secret=self.api_secret,
+                )
+                self.logger.info("✅ Pybit session initialized successfully")
+            except Exception as e:
+                self.logger.error(f"❌ Failed to initialize pybit session: {e}")
+                self.session = None
+        else:
+            self.logger.info("🔄 Virtual trading mode - no pybit session needed")
         
         # Sprawdź czy klucze API są dostępne
         if not self.api_key or not self.api_secret:
@@ -237,27 +254,27 @@ class LLMTradingBot:
         self.logger.info(f"📊 Available categories: {available_categories}")
         return available_categories
 
-    def get_account_balance(self) -> Optional[float]:
-        """Pobiera rzeczywiste saldo konta z Bybit używając pybit"""
+    def get_account_balance(self):
+        """Pobiera rzeczywiste saldo konta z Bybit - POPRAWIONA"""
         if not self.real_trading:
             return self.virtual_balance
             
         if not self.session:
-            self.logger.error("❌ Brak sesji pybit")
-            return None
-
-        try:
-            response = self.session.get_wallet_balance(
-                accountType="UNIFIED"
-            )
+            self.logger.error("❌ Brak sesji pybit dla real trading")
+            return self.virtual_balance
             
+        try:
+            response = self.session.get_wallet_balance(accountType="UNIFIED")
             if response['retCode'] == 0:
-                total_equity = float(response['result']['list'][0]['totalEquity'])
-                self.logger.info(f"💰 Rzeczywiste saldo konta z Bybit: ${total_equity:.2f}")
-                return total_equity
+                total_balance = float(response['result']['list'][0]['totalWalletBalance'])
+                self.logger.info(f"💰 Real account balance: ${total_balance:.2f}")
+                return total_balance
             else:
-                self.logger.warning("⚠️ Nie udało się pobrać salda konta z Bybit")
-                return None
+                self.logger.error(f"❌ Błąd pobierania salda: {response.get('retMsg', 'Unknown')}")
+                return self.virtual_balance
+        except Exception as e:
+            self.logger.error(f"❌ Error getting balance: {e}")
+            return self.virtual_balance
                     
         except Exception as e:
             self.logger.error(f"❌ Error getting account balance from Bybit: {e}")
@@ -305,52 +322,45 @@ class LLMTradingBot:
             self.logger.error(f"❌ Error getting PUBLIC futures price for {symbol}: {e}")
             return None
 
-    def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[str]:
-        """Składa zlecenie futures na Bybit używając pybit"""
-        
-        self.logger.info(f"🚀 PLACE_BYBIT_ORDER: {symbol} {side} Qty: {quantity:.6f}")
-        
+    def place_bybit_order(self, symbol: str, side: str, quantity: float, price: float):
+        """Składa zlecenie na Bybit - POPRAWIONA"""
         if not self.real_trading:
-            order_id = f"virtual_{int(time.time())}"
-            self.logger.info(f"🔄 Virtual order: {order_id}")
+            order_id = f"VIRTUAL_{int(time.time())}"
+            self.logger.info(f"📝 Virtual order {order_id}: {side} {quantity} {symbol} @ ${price}")
             return order_id
             
         if not self.session:
-            self.logger.error("❌ Brak sesji pybit")
+            self.logger.error("❌ Brak sesji pybit dla real trading")
             return None
-            
-        try:
-            # 1. Ustaw dźwignię
-            self.set_leverage(symbol, self.leverage)
     
-            # 2. Formatowanie quantity
-            quantity_str = self.format_quantity(symbol, quantity)
+        try:
+            # Sprawdź minimalną wartość zlecenia
+            if not self.check_minimum_order(symbol, quantity, price):
+                return None
+    
+            order_side = "Buy" if side == "LONG" else "Sell"
             
-            # 3. Złóż zlecenie
             response = self.session.place_order(
                 category="linear",
                 symbol=symbol,
-                side="Buy" if side == "LONG" else "Sell",
+                side=order_side,
                 orderType="Market",
-                qty=quantity_str,
+                qty=str(quantity),
                 timeInForce="GTC",
+                leverage=str(self.leverage),
+                reduceOnly=False
             )
-            
-            self.logger.info(f"📨 Pybit response: {response}")
             
             if response['retCode'] == 0:
                 order_id = response['result']['orderId']
-                self.logger.info(f"✅ ORDER SUCCESS: {symbol} {side} - ID: {order_id}")
+                self.logger.info(f"✅ Real order placed: {order_id}")
                 return order_id
             else:
-                error_msg = response.get('retMsg', 'Unknown error')
-                self.logger.error(f"❌ ORDER FAILED: {error_msg}")
+                self.logger.error(f"❌ Błąd zlecenia: {response.get('retMsg', 'Unknown')}")
                 return None
                 
         except Exception as e:
-            self.logger.error(f"💥 CRITICAL ERROR in place_bybit_order: {e}")
-            import traceback
-            self.logger.error(f"💥 Stack trace: {traceback.format_exc()}")
+            self.logger.error(f"❌ Error placing order: {e}")
             return None
 
     def analyze_simple_momentum(self, symbol: str) -> float:
@@ -583,13 +593,13 @@ class LLMTradingBot:
         try:
             response = self.session.get_positions(
                 category="linear",
-                settleCoin="USDT"  # DODAJ TEN PARAMETR
+                settleCoin="USDT"
             )
             
             if response['retCode'] == 0:
                 active_positions = []
                 for pos in response['result']['list']:
-                    if float(pos['size']) > 0:  # Tylko pozycje z wielkością > 0
+                    if float(pos['size']) > 0:
                         active_positions.append({
                             'symbol': pos['symbol'],
                             'side': 'LONG' if pos['side'] == 'Buy' else 'SHORT',
@@ -601,7 +611,7 @@ class LLMTradingBot:
                         })
                 return active_positions
             else:
-                self.logger.error(f"❌ Błąd pobierania pozycji z Bybit: {response.get('retMsg', 'Unknown')}")
+                self.logger.error(f"❌ Błąd pobierania pozycji: {response.get('retMsg', 'Unknown')}")
                 return []
             
         except Exception as e:
