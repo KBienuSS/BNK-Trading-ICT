@@ -389,7 +389,7 @@ class LLMTradingBot:
             'DOGEUSDT': 5,     # $1
         }
         
-        min_value = min_order_values.get(symbol, 1)
+        min_value = min_order_values.get(symbol, 5)
         order_value = quantity * price
         
         if order_value < min_value:
