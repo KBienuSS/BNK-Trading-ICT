@@ -76,6 +76,35 @@ def get_trading_data():
 def get_bot_status():
     return jsonify({'status': bot_status})
 
+@app.route('/api/debug-positions')
+def debug_positions():
+    """Endpoint do debugowania pozycji"""
+    try:
+        # Pobierz pozycje z Bybit
+        bybit_positions = trading_bot.get_bybit_positions()
+        
+        # Pobierz lokalne pozycje
+        local_positions = []
+        for pos_id, pos in trading_bot.positions.items():
+            if pos['status'] == 'ACTIVE':
+                local_positions.append({
+                    'id': pos_id,
+                    'symbol': pos['symbol'],
+                    'side': pos['side'],
+                    'quantity': pos['quantity'],
+                    'entry_price': pos['entry_price'],
+                    'real_trading': pos.get('real_trading', False)
+                })
+        
+        return jsonify({
+            'bybit_positions': bybit_positions,
+            'local_positions': local_positions,
+            'bybit_count': len(bybit_positions),
+            'local_count': len(local_positions)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+        
 @app.route('/api/start-bot', methods=['POST'])
 def start_bot():
     global bot_status, llm_trading_bot  # Zmieniam na llm_trading_bot
