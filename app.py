@@ -509,6 +509,53 @@ def debug_all_positions():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/test-api-connection')
+def test_api_connection():
+    """Testuje połączenie z API Bybit"""
+    try:
+        if not llm_trading_bot:
+            return jsonify({'error': 'Bot not initialized'}), 500
+        
+        api_test = llm_trading_bot.test_bybit_api_connection()
+        return jsonify(api_test)
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/debug-api-config')
+def debug_api_config():
+    """Debuguje konfigurację API Bybit (bez pokazywania sekretów)"""
+    try:
+        if not llm_trading_bot:
+            return jsonify({'error': 'Bot not initialized'}), 500
+        
+        config = {
+            'real_trading': llm_trading_bot.real_trading,
+            'testnet': llm_trading_bot.testnet,
+            'has_session': llm_trading_bot.session is not None,
+            'api_key_exists': hasattr(llm_trading_bot, 'api_key') and llm_trading_bot.api_key is not None,
+            'api_secret_exists': hasattr(llm_trading_bot, 'api_secret') and llm_trading_bot.api_secret is not None,
+            'positions_count': len(llm_trading_bot.positions)
+        }
+        
+        return jsonify(config)
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+        
+@app.route('/api/force-sync', methods=['POST'])
+def force_sync_positions():
+    """Wymusza synchronizację pozycji z Bybit"""
+    try:
+        if not llm_trading_bot:
+            return jsonify({'error': 'Bot not initialized'}), 500
+        
+        llm_trading_bot.sync_all_positions_with_bybit()
+        return jsonify({'status': 'success', 'message': 'Forced sync completed'})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
         
 
 def run_bot():
