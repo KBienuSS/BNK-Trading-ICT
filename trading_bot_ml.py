@@ -118,7 +118,7 @@ class LLMTradingBot:
         }
         
         # AKTYWNY PROFIL
-        self.active_profile = 'Claude'
+        self.active_profile = 'Qwen'
         
         # PARAMETRY OPERACYJNE
         self.max_simultaneous_positions = 4
