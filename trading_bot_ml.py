@@ -225,6 +225,83 @@ class LLMTradingBot:
             self.logger.error(f"❌ Error getting account balance from Bybit: {e}")
             return None
 
+    def get_all_bybit_positions_debug(self):
+        """Debugowa metoda do sprawdzania WSZYSTKICH pozycji na koncie"""
+        if not self.real_trading or not self.session:
+            return {"error": "Not in real trading mode or no session"}
+        
+        try:
+            self.logger.info("🔍 DEBUG: Checking ALL account positions...")
+            
+            # Sprawdź różne kategorie
+            categories = ['linear', 'inverse', 'spot']
+            all_positions = {}
+            
+            for category in categories:
+                try:
+                    response = self.session.get_positions(category=category, symbol="")
+                    self.logger.info(f"📊 {category.upper()} positions - Code: {response['retCode']}")
+                    
+                    if response['retCode'] == 0:
+                        positions = response['result'].get('list', [])
+                        all_positions[category] = positions
+                        
+                        for pos in positions:
+                            symbol = pos.get('symbol', 'Unknown')
+                            size = float(pos.get('size', 0))
+                            side = pos.get('side', 'Unknown')
+                            self.logger.info(f"  📍 {category} {symbol} {side} - Size: {size}")
+                    else:
+                        self.logger.info(f"  ❌ {category}: {response.get('retMsg', 'No positions')}")
+                        
+                except Exception as e:
+                    self.logger.error(f"❌ Error checking {category}: {e}")
+            
+            return all_positions
+            
+        except Exception as e:
+            self.logger.error(f"❌ Debug error: {e}")
+            return {"error": str(e)}
+    
+    def test_bybit_api_connection(self):
+        """Testuje połączenie z API Bybit"""
+        try:
+            if not self.real_trading or not self.session:
+                return {"status": "not_connected", "message": "Not in real trading mode"}
+            
+            # Test 1: Pobierz ticker (publiczny endpoint)
+            try:
+                ticker_response = self.session.get_tickers(category="linear", symbol="BTCUSDT")
+                ticker_status = ticker_response['retCode'] == 0
+            except:
+                ticker_status = False
+            
+            # Test 2: Pobierz saldo (prywatny endpoint)
+            try:
+                balance_response = self.session.get_wallet_balance(accountType="UNIFIED")
+                balance_status = balance_response['retCode'] == 0
+            except:
+                balance_status = False
+            
+            # Test 3: Pobierz pozycje (prywatny endpoint)
+            try:
+                positions_response = self.session.get_positions(category="linear", symbol="")
+                positions_status = positions_response['retCode'] == 0
+            except:
+                positions_status = False
+            
+            return {
+                "status": "connected",
+                "public_api": ticker_status,
+                "private_api_balance": balance_status,
+                "private_api_positions": positions_status,
+                "testnet": self.testnet,
+                "message": f"Public: {ticker_status}, Balance: {balance_status}, Positions: {positions_status}"
+            }
+            
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+        
     def get_current_price(self, symbol: str) -> Optional[float]:
         """Pobiera cenę futures TYLKO przez PUBLIC API - bez autoryzacji"""
         try:
@@ -525,7 +602,7 @@ class LLMTradingBot:
             self.logger.error(f"❌ Error closing Bybit position: {e}")
             return False
 
-    def get_bybit_positions(self) -> List[Dict]:
+def get_bybit_positions(self) -> List[Dict]:
         """Pobiera aktywne pozycje z Bybit używając pybit"""
         if not self.real_trading:
             self.logger.info("🔄 Virtual mode - no Bybit positions")
@@ -538,55 +615,66 @@ class LLMTradingBot:
         try:
             self.logger.info("🔍 Fetching positions from Bybit...")
             
-            response = self.session.get_positions(
-                category="linear",
-                symbol=""  # Pobierz wszystkie pozycje
-            )
+            # SPRÓBUJ RÓŻNE KATEGORIE
+            categories_to_try = ['linear', 'inverse']
+            all_positions = []
             
-            self.logger.info(f"📨 Bybit API Response Code: {response['retCode']}")
-            self.logger.info(f"📨 Bybit API Message: {response.get('retMsg', 'No message')}")
-            
-            if response['retCode'] == 0:
-                active_positions = []
-                result_list = response['result'].get('list', [])
-                self.logger.info(f"📊 Found {len(result_list)} position entries in response")
-                
-                for i, pos in enumerate(result_list):
-                    size = float(pos['size'])
-                    symbol = pos['symbol']
-                    side = 'LONG' if pos['side'] == 'Buy' else 'SHORT'
+            for category in categories_to_try:
+                try:
+                    self.logger.info(f"🔍 Trying category: {category}")
+                    response = self.session.get_positions(
+                        category=category,
+                        symbol=""  # Pobierz wszystkie pozycje
+                    )
                     
-                    self.logger.info(f"  📍 Entry {i}: {symbol} {side} - Size: {size}")
+                    self.logger.info(f"📨 Bybit {category} API Response Code: {response['retCode']}")
+                    self.logger.info(f"📨 Bybit {category} API Message: {response.get('retMsg', 'No message')}")
                     
-                    if size > 0:  # Tylko pozycje z wielkością > 0
-                        # Konwertuj timestamp na datetime
-                        created_time = datetime.fromtimestamp(int(pos['createdTime']) / 1000) if pos.get('createdTime') else datetime.now()
+                    if response['retCode'] == 0:
+                        result_list = response['result'].get('list', [])
+                        self.logger.info(f"📊 Found {len(result_list)} position entries in {category} response")
                         
-                        position_data = {
-                            'symbol': symbol,
-                            'side': side,
-                            'size': size,
-                            'entry_price': float(pos['avgPrice']),
-                            'leverage': float(pos['leverage']),
-                            'unrealised_pnl': float(pos['unrealisedPnl']),
-                            'liq_price': float(pos['liqPrice']) if pos['liqPrice'] and pos['liqPrice'] != '' else None,
-                            'position_value': float(pos['positionValue']),
-                            'position_margin': float(pos['positionIM']),
-                            'created_time': created_time,
-                            'mark_price': float(pos['markPrice']) if pos.get('markPrice') else float(pos['avgPrice'])
-                        }
-                        
-                        active_positions.append(position_data)
-                        self.logger.info(f"  ✅ ADDED: {symbol} {side} Size: {size}, Entry: ${position_data['entry_price']}")
+                        for i, pos in enumerate(result_list):
+                            size = float(pos.get('size', 0))
+                            symbol = pos.get('symbol', 'Unknown')
+                            side = 'LONG' if pos.get('side') == 'Buy' else 'SHORT'
+                            
+                            self.logger.info(f"  📍 {category} Entry {i}: {symbol} {side} - Size: {size}")
+                            
+                            if size > 0:  # Tylko pozycje z wielkością > 0
+                                # Konwertuj timestamp na datetime
+                                created_time = datetime.fromtimestamp(int(pos['createdTime']) / 1000) if pos.get('createdTime') else datetime.now()
+                                
+                                position_data = {
+                                    'symbol': symbol,
+                                    'side': side,
+                                    'size': size,
+                                    'entry_price': float(pos.get('avgPrice', 0)),
+                                    'leverage': float(pos.get('leverage', 1)),
+                                    'unrealised_pnl': float(pos.get('unrealisedPnl', 0)),
+                                    'liq_price': float(pos['liqPrice']) if pos.get('liqPrice') and pos['liqPrice'] != '' else None,
+                                    'position_value': float(pos.get('positionValue', 0)),
+                                    'position_margin': float(pos.get('positionIM', 0)),
+                                    'created_time': created_time,
+                                    'mark_price': float(pos.get('markPrice', pos.get('avgPrice', 0))),
+                                    'category': category
+                                }
+                                
+                                all_positions.append(position_data)
+                                self.logger.info(f"  ✅ ADDED: {symbol} {side} Size: {size}, Entry: ${position_data['entry_price']}")
+                            else:
+                                self.logger.info(f"  ❌ SKIPPED: {symbol} {side} - Zero size: {size}")
+                    
                     else:
-                        self.logger.info(f"  ❌ SKIPPED: {symbol} {side} - Zero size: {size}")
-                
-                self.logger.info(f"✅ Final: {len(active_positions)} active positions on Bybit")
-                return active_positions
-            else:
-                error_msg = response.get('retMsg', 'Unknown error')
-                self.logger.error(f"❌ Błąd pobierania pozycji z Bybit: {error_msg}")
-                return []
+                        error_msg = response.get('retMsg', 'Unknown error')
+                        self.logger.info(f"ℹ️ No positions in {category}: {error_msg}")
+                        
+                except Exception as e:
+                    self.logger.error(f"❌ Error getting {category} positions: {e}")
+                    continue
+            
+            self.logger.info(f"✅ Final: {len(all_positions)} active positions on Bybit")
+            return all_positions
             
         except Exception as e:
             self.logger.error(f"❌ Error getting Bybit positions: {e}")
