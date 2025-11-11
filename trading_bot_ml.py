@@ -589,7 +589,7 @@ class LLMTradingBot:
             return False
 
     def get_bybit_positions(self) -> List[Dict]:
-        """POPRAWIONE pobieranie pozycji z Bybit"""
+        """POPRAWIONE pobieranie pozycji z Bybit dla API V5"""
         if not self.real_trading:
             self.logger.info("🔄 Virtual mode - no Bybit positions")
             return []
@@ -599,57 +599,63 @@ class LLMTradingBot:
             return []
     
         try:
-            self.logger.info("🔍 Fetching ALL positions from Bybit...")
+            self.logger.info("🔍 Fetching ALL positions from Bybit (V5 API)...")
             
-            response = self.session.get_positions(
-                category="linear",
-                symbol=""  # Pobierz wszystkie pozycje
-            )
+            # SPRAWDŹ POZYCJE DLA RÓŻNYCH settleCoin
+            settle_coins = ['USDT', 'USDC', 'BTC', 'ETH']  # Najczęstsze stablecoiny
+            all_positions = []
             
-            self.logger.info(f"📨 Bybit API Response Code: {response['retCode']}")
-            
-            if response['retCode'] == 0:
-                active_positions = []
-                result_list = response['result'].get('list', [])
-                self.logger.info(f"📊 Found {len(result_list)} position entries in response")
-                
-                for i, pos in enumerate(result_list):
-                    size = float(pos['size'])
-                    symbol = pos['symbol']
-                    side = 'LONG' if pos['side'] == 'Buy' else 'SHORT'
+            for settle_coin in settle_coins:
+                try:
+                    self.logger.info(f"🔍 Checking positions for settleCoin: {settle_coin}")
                     
-                    # DEBUG: Log każdą pozycję
-                    self.logger.info(f"  📍 Position {i}: {symbol} {side} - Size: {size}, AvgPrice: ${pos['avgPrice']}")
+                    response = self.session.get_positions(
+                        category="linear",
+                        settleCoin=settle_coin  # ← WAŻNE: podaj settleCoin zamiast pustego symbol
+                    )
                     
-                    if size > 0:  # Tylko pozycje z wielkością > 0
-                        # Konwertuj timestamp na datetime
-                        created_time = datetime.fromtimestamp(int(pos['createdTime']) / 1000) if pos.get('createdTime') else datetime.now()
+                    self.logger.info(f"📨 Bybit API Response for {settle_coin}: {response['retCode']}")
+                    
+                    if response['retCode'] == 0:
+                        result_list = response['result'].get('list', [])
+                        self.logger.info(f"📊 Found {len(result_list)} position entries for {settle_coin}")
                         
-                        position_data = {
-                            'symbol': symbol,
-                            'side': side,
-                            'size': size,
-                            'entry_price': float(pos['avgPrice']),
-                            'leverage': float(pos['leverage']),
-                            'unrealised_pnl': float(pos['unrealisedPnl']),
-                            'liq_price': float(pos['liqPrice']) if pos['liqPrice'] and pos['liqPrice'] != '' else None,
-                            'position_value': float(pos['positionValue']),
-                            'position_margin': float(pos['positionIM']),
-                            'created_time': created_time,
-                            'mark_price': float(pos['markPrice']) if pos.get('markPrice') else float(pos['avgPrice'])
-                        }
-                        
-                        active_positions.append(position_data)
-                        self.logger.info(f"  ✅ ADDED ACTIVE: {symbol} {side} Size: {size}, Entry: ${position_data['entry_price']}, PnL: ${position_data['unrealised_pnl']:.2f}")
-                    else:
-                        self.logger.info(f"  ❌ SKIPPED (zero size): {symbol} {side} - Size: {size}")
-                
-                self.logger.info(f"✅ Final: {len(active_positions)} ACTIVE positions on Bybit")
-                return active_positions
-            else:
-                error_msg = response.get('retMsg', 'Unknown error')
-                self.logger.error(f"❌ Błąd pobierania pozycji z Bybit: {error_msg}")
-                return []
+                        for i, pos in enumerate(result_list):
+                            size = float(pos['size'])
+                            symbol = pos['symbol']
+                            side = 'LONG' if pos['side'] == 'Buy' else 'SHORT'
+                            
+                            self.logger.info(f"  📍 Position {i}: {symbol} {side} - Size: {size}, AvgPrice: ${pos['avgPrice']}")
+                            
+                            if size > 0:
+                                created_time = datetime.fromtimestamp(int(pos['createdTime']) / 1000) if pos.get('createdTime') else datetime.now()
+                                
+                                position_data = {
+                                    'symbol': symbol,
+                                    'side': side,
+                                    'size': size,
+                                    'entry_price': float(pos['avgPrice']),
+                                    'leverage': float(pos['leverage']),
+                                    'unrealised_pnl': float(pos['unrealisedPnl']),
+                                    'liq_price': float(pos['liqPrice']) if pos['liqPrice'] and pos['liqPrice'] != '' else None,
+                                    'position_value': float(pos['positionValue']),
+                                    'position_margin': float(pos['positionIM']),
+                                    'created_time': created_time,
+                                    'mark_price': float(pos['markPrice']) if pos.get('markPrice') else float(pos['avgPrice']),
+                                    'settle_coin': settle_coin
+                                }
+                                
+                                all_positions.append(position_data)
+                                self.logger.info(f"  ✅ ADDED ACTIVE: {symbol} {side} Size: {size}, Entry: ${position_data['entry_price']}, PnL: ${position_data['unrealised_pnl']:.2f}")
+                            else:
+                                self.logger.info(f"  ❌ SKIPPED (zero size): {symbol} {side} - Size: {size}")
+                    
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Error checking {settle_coin} positions: {e}")
+                    continue
+            
+            self.logger.info(f"✅ Final: {len(all_positions)} ACTIVE positions on Bybit")
+            return all_positions
             
         except Exception as e:
             self.logger.error(f"❌ Error getting Bybit positions: {e}")
@@ -658,9 +664,8 @@ class LLMTradingBot:
             return []
         
     def get_bybit_unrealized_pnl(self) -> float:
-        """POPRAWIONE pobieranie unrealized P&L z Bybit"""
+        """POPRAWIONE pobieranie unrealized P&L z Bybit dla API V5"""
         if not self.real_trading:
-            # Dla trybu wirtualnego, oblicz normalnie
             total_unrealized = 0
             for position in self.positions.values():
                 if position['status'] == 'ACTIVE':
@@ -680,30 +685,100 @@ class LLMTradingBot:
             return 0.0
     
         try:
-            response = self.session.get_positions(
-                category="linear",
-                symbol=""
-            )
+            total_unrealized = 0.0
+            settle_coins = ['USDT', 'USDC', 'BTC', 'ETH']
             
-            if response['retCode'] == 0:
-                total_unrealized = 0.0
-                for pos in response['result']['list']:
-                    size = float(pos.get('size', 0))
-                    if size > 0:  # Tylko aktywne pozycje
-                        unrealised_pnl = float(pos.get('unrealisedPnl', 0))
-                        total_unrealized += unrealised_pnl
-                        self.logger.info(f"📊 Position {pos['symbol']} P&L: ${unrealised_pnl:.2f}")
-                
-                self.logger.info(f"📊 Total Real Unrealized P&L from Bybit: ${total_unrealized:.2f}")
-                return total_unrealized
-            else:
-                self.logger.error(f"❌ Błąd pobierania unrealized P&L z Bybit: {response.get('retMsg', 'Unknown')}")
-                return 0.0
+            for settle_coin in settle_coins:
+                try:
+                    response = self.session.get_positions(
+                        category="linear",
+                        settleCoin=settle_coin  # ← WAŻNE: podaj settleCoin
+                    )
+                    
+                    if response['retCode'] == 0:
+                        for pos in response['result']['list']:
+                            size = float(pos.get('size', 0))
+                            if size > 0:
+                                unrealised_pnl = float(pos.get('unrealisedPnl', 0))
+                                total_unrealized += unrealised_pnl
+                                self.logger.info(f"📊 Position {pos['symbol']} P&L: ${unrealised_pnl:.2f}")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Error getting P&L for {settle_coin}: {e}")
+                    continue
+            
+            self.logger.info(f"📊 Total Real Unrealized P&L from Bybit: ${total_unrealized:.2f}")
+            return total_unrealized
                 
         except Exception as e:
             self.logger.error(f"❌ Error getting unrealized P&L from Bybit: {e}")
             return 0.0
 
+    def get_bybit_positions_unified(self) -> List[Dict]:
+        """Pobieranie pozycji dla konta UNIFIED"""
+        if not self.real_trading or not self.session:
+            return []
+    
+        try:
+            self.logger.info("🔍 Fetching positions from UNIFIED account...")
+            
+            # Spróbuj pobrać z unified account
+            response = self.session.get_positions(
+                category="linear",
+                settleCoin="USDT"  # Dla unified account zwykle USDT
+            )
+            
+            if response['retCode'] == 0:
+                positions = []
+                for pos in response['result']['list']:
+                    size = float(pos['size'])
+                    if size > 0:
+                        positions.append({
+                            'symbol': pos['symbol'],
+                            'side': 'LONG' if pos['side'] == 'Buy' else 'SHORT',
+                            'size': size,
+                            'entry_price': float(pos['avgPrice']),
+                            'unrealised_pnl': float(pos['unrealisedPnl'])
+                        })
+                return positions
+            return []
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error getting unified positions: {e}")
+            return []
+
+    def debug_bybit_api(self):
+        """Debugowanie API Bybit"""
+        self.logger.info("🐛 DEBUG BYBIT API V5")
+        
+        if not self.session:
+            return {"error": "No session"}
+        
+        try:
+            # Test 1: Pobierz pozycje z różnymi settleCoin
+            results = {}
+            for settle_coin in ['USDT', 'USDC']:
+                try:
+                    response = self.session.get_positions(
+                        category="linear", 
+                        settleCoin=settle_coin
+                    )
+                    results[settle_coin] = {
+                        'retCode': response['retCode'],
+                        'positions_count': len(response['result']['list']),
+                        'positions': [
+                            f"{pos['symbol']} {pos['side']} {pos['size']}" 
+                            for pos in response['result']['list'] 
+                            if float(pos['size']) > 0
+                        ]
+                    }
+                except Exception as e:
+                    results[settle_coin] = {'error': str(e)}
+            
+            return results
+            
+        except Exception as e:
+            return {'error': str(e)}
+        
     def sync_with_bybit(self):
         """Synchronizuje stan z rzeczywistymi pozycjami na Bybit"""
         if not self.real_trading:
