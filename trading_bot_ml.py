@@ -1065,9 +1065,9 @@ class LLMTradingBot:
         self.dashboard_data['last_update'] = datetime.now()
 
     def debug_api_connection(self):
-        """Testuje połączenie z API i próbuje złożyć testowe zlecenie używając pybit"""
+        """Testuje połączenie z API BEZ składania prawdziwych zleceń"""
         
-        self.logger.info("🔧 DEBUG API CONNECTION")
+        self.logger.info("🔧 DEBUG API CONNECTION (SAFE MODE)")
         
         symbol = "BTCUSDT"
         price = self.get_current_price(symbol)
@@ -1076,30 +1076,35 @@ class LLMTradingBot:
         else:
             self.logger.error(f"❌ Price FAILED")
             return False
-    
+        
         balance = self.get_account_balance()
         if balance:
             self.logger.info(f"✅ Balance OK: ${balance:.2f}")
         else:
             self.logger.error(f"❌ Balance FAILED")
             return False
-    
+        
         leverage_ok = self.set_leverage(symbol, self.leverage)
         if leverage_ok:
             self.logger.info(f"✅ Leverage OK: {self.leverage}x")
         else:
             self.logger.warning(f"⚠️ Leverage may have failed")
-    
-        self.logger.info("🚀 TESTING ORDER PLACEMENT...")
-        test_quantity = 0.001
-        order_id = self.place_bybit_order(symbol, "LONG", test_quantity, price)
         
-        if order_id:
-            self.logger.info(f"🎉 ORDER TEST SUCCESS! ID: {order_id}")
-            return True
+        # ZMIENIONE: Tylko symulacja zlecenia, nie składaj prawdziwego!
+        self.logger.info("🚀 TESTING ORDER PLACEMENT (SIMULATION ONLY)...")
+        
+        # Symuluj zlecenie bez rzeczywistego składania
+        test_quantity = 0.001
+        order_value = test_quantity * price
+        
+        if self.real_trading:
+            self.logger.info(f"🎯 SIMULATED ORDER: {symbol} LONG Qty: {test_quantity}, Value: ${order_value:.2f}")
+            self.logger.info("✅ ORDER TEST SIMULATION SUCCESS! (No real order placed)")
         else:
-            self.logger.error("❌ ORDER TEST FAILED")
-            return False
+            self.logger.info(f"🎯 VIRTUAL ORDER: {symbol} LONG Qty: {test_quantity}")
+            self.logger.info("✅ VIRTUAL ORDER TEST SUCCESS!")
+        
+        return True  # Zawsze zwracaj True w trybie safe
 
     def check_exit_conditions(self):
         """Sprawdza warunki wyjścia z pozycji używając rzeczywistych cen z Bybit API"""
