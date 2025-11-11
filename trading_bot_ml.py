@@ -895,23 +895,36 @@ class LLMTradingBot:
         return random.random() < frequency_chance
 
     def open_llm_position(self, symbol: str):
-        """Otwiera pozycję w stylu LLM używając rzeczywistych cen z API Bybit"""
+        """UPROSZCZONE otwieranie pozycji jak w drugim bocie"""
+        self.logger.info(f"🔧 ATTEMPTING TO OPEN: {symbol}")
+        
         if not self.should_enter_trade():
             return None
             
         current_price = self.get_current_price(symbol)
         if not current_price:
-            self.logger.warning(f"❌ Could not get price for {symbol} - skipping trade")
+            self.logger.warning(f"❌ Could not get price for {symbol}")
             return None
             
         signal, confidence = self.generate_llm_signal(symbol)
         if signal == "HOLD" or confidence < 0.3:
             return None
             
-        active_positions = sum(1 for p in self.positions.values() if p['status'] == 'ACTIVE')
-        if active_positions >= self.max_simultaneous_positions:
+        # ✅ SPRAWDŹ CZY JUŻ MASZ AKTYWNĄ POZYCJĘ DLA TEGO SYMBOLU
+        existing_position = any(
+            p['symbol'] == symbol and p['status'] == 'ACTIVE' 
+            for p in self.positions.values()
+        )
+        if existing_position:
+            self.logger.info(f"⏸️ Already have active position for {symbol}")
             return None
             
+        active_count = sum(1 for p in self.positions.values() if p['status'] == 'ACTIVE')
+        if active_count >= self.max_simultaneous_positions:
+            self.logger.info(f"⏸️ Max positions reached ({active_count}/{self.max_simultaneous_positions})")
+            return None
+            
+        # OBLICZ WIELKOŚĆ POZYCJI
         quantity, position_value, margin_required = self.calculate_position_size(
             symbol, current_price, confidence
         )
@@ -926,6 +939,7 @@ class LLMTradingBot:
             self.logger.warning(f"💰 Insufficient balance for {symbol}")
             return None
             
+        # ✅ UPROSZCZONE TWORZENIE POZYCJI
         exit_plan = self.calculate_llm_exit_plan(current_price, confidence, signal)
         
         if signal == "LONG":
@@ -933,17 +947,18 @@ class LLMTradingBot:
         else:
             liquidation_price = current_price * (1 + 0.9 / self.leverage)
         
+        # SKŁADANIE ZLECENIA
         order_id = None
         if self.real_trading:
             order_id = self.place_bybit_order(symbol, signal, quantity, current_price)
             if not order_id:
-                self.logger.error(f"❌ Failed to place order on Bybit for {symbol}")
                 return None
         else:
             order_id = f"virtual_{int(time.time())}"
         
         position_id = order_id
         
+        # ✅ PROSTE ZAPISANIE POZYCJI LOKALNIE
         position = {
             'symbol': symbol,
             'side': signal,
@@ -952,38 +967,32 @@ class LLMTradingBot:
             'leverage': self.leverage,
             'margin': margin_required,
             'liquidation_price': liquidation_price,
-            'entry_time': datetime.now(),
+            'entry_time': datetime.now(),  # ✅ WAŻNE: lokalny czas
             'status': 'ACTIVE',
             'unrealized_pnl': 0,
             'confidence': confidence,
             'llm_profile': self.active_profile,
             'exit_plan': exit_plan,
             'order_id': order_id,
-            'real_trading': self.real_trading
+            'real_trading': self.real_trading,
+            'current_price': current_price  # ✅ ZAPISZ CENĘ OD RAZU
         }
         
         self.positions[position_id] = position
         
-        # ✅ POPRAWIONE: Aktualizacja statystyk przy OTWIERANIU pozycji
+        # Aktualizuj statystyki
         if signal == "LONG":
             self.stats['long_trades'] += 1
         else:
             self.stats['short_trades'] += 1
         
-        # ✅ DODANE: Inkrementacja total_trades przy otwarciu
         self.stats['total_trades'] += 1
         
         if not self.real_trading:
             self.virtual_balance -= margin_required
         
-        tp_distance = (exit_plan['take_profit'] - current_price) / current_price * 100
-        sl_distance = (current_price - exit_plan['stop_loss']) / current_price * 100
-        
-        trading_mode = "REAL" if self.real_trading else "VIRTUAL"
-        self.logger.info(f"🎯 {trading_mode} {self.active_profile} OPEN: {symbol} {signal} @ ${current_price:.4f}")
-        self.logger.info(f"   📊 Confidence: {confidence:.1%} | Size: ${position_value:.2f}")
-        self.logger.info(f"   🎯 TP: {exit_plan['take_profit']:.4f} ({tp_distance:+.2f}%)")
-        self.logger.info(f"   🛑 SL: {exit_plan['stop_loss']:.4f} ({sl_distance:+.2f}%)")
+        self.logger.info(f"🎯 OPENED: {symbol} {signal} @ ${current_price:.4f}")
+        self.logger.info(f"   ⏰ Max holding time: {exit_plan['max_holding_hours']}h")
         
         return position_id
 
@@ -1111,45 +1120,64 @@ class LLMTradingBot:
         return True  # Zawsze zwracaj True w trybie safe
 
     def check_exit_conditions(self):
-        """Sprawdza warunki wyjścia z pozycji używając rzeczywistych cen z Bybit API"""
+        """Sprawdza warunki wyjścia z pozycji - PROSTA WERSJA jak w drugim bocie"""
         positions_to_close = []
         
         for position_id, position in self.positions.items():
             if position['status'] != 'ACTIVE':
                 continue
                 
-            current_price = position.get('current_price', self.get_current_price(position['symbol']))
+            # ✅ UŻYWAJ LOCAL current_price z pozycji, nie pobieraj ponownie
+            current_price = position.get('current_price')
             if not current_price:
-                continue
+                # Tylko jeśli nie ma, pobierz świeżą cenę
+                current_price = self.get_current_price(position['symbol'])
+                if current_price:
+                    position['current_price'] = current_price  # zapisz w pozycji
+                else:
+                    continue  # pomiń jeśli nie można pobrać ceny
                 
             exit_reason = None
-            exit_plan = position['exit_plan']
+            exit_plan = position.get('exit_plan', {})
             
+            if not exit_plan:
+                self.logger.warning(f"⚠️ No exit plan for {position_id}, creating default")
+                exit_plan = self.calculate_llm_exit_plan(
+                    position['entry_price'], 
+                    position.get('confidence', 0.5), 
+                    position['side']
+                )
+                position['exit_plan'] = exit_plan
+            
+            # WARUNKI WYJŚCIA
             if position['side'] == 'LONG':
                 if current_price >= exit_plan['take_profit']:
                     exit_reason = "TAKE_PROFIT"
                 elif current_price <= exit_plan['stop_loss']:
                     exit_reason = "STOP_LOSS"
-                elif current_price <= exit_plan['invalidation']:
-                    exit_reason = "INVALIDATION"
-                elif current_price <= position['liquidation_price']:
+                elif current_price <= position.get('liquidation_price', 0):
                     exit_reason = "LIQUIDATION"
-            else:
+            else:  # SHORT
                 if current_price <= exit_plan['take_profit']:
                     exit_reason = "TAKE_PROFIT"
                 elif current_price >= exit_plan['stop_loss']:
                     exit_reason = "STOP_LOSS"
-                elif current_price >= exit_plan['invalidation']:
-                    exit_reason = "INVALIDATION"
-                elif current_price >= position['liquidation_price']:
+                elif current_price >= position.get('liquidation_price', float('inf')):
                     exit_reason = "LIQUIDATION"
             
+            # ✅ POPRAWIONE: DEBUGUJ CZAS TRZYMANIA
             holding_time = (datetime.now() - position['entry_time']).total_seconds() / 3600
-            if holding_time > exit_plan['max_holding_hours']:
+            max_holding = exit_plan.get('max_holding_hours', 6)
+            
+            self.logger.info(f"⏰ POSITION TIME: {position['symbol']} - Holding: {holding_time:.2f}h / Max: {max_holding}h")
+            
+            if holding_time > max_holding:
                 exit_reason = "TIME_EXPIRED"
+                self.logger.info(f"🕐 TIME EXPIRED: {position['symbol']} - {holding_time:.2f}h > {max_holding}h")
             
             if exit_reason:
                 positions_to_close.append((position_id, exit_reason, current_price))
+                self.logger.info(f"🎯 EXIT CONDITION: {position['symbol']} - {exit_reason}")
         
         return positions_to_close
 
