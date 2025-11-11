@@ -124,7 +124,7 @@ class LLMTradingBot:
         self.max_simultaneous_positions = 4
         self.assets = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'DOGEUSDT']
         
-        # STATYSTYKI
+        # W metodzie __init__ dodaj brakujące klucze:
         self.stats = {
             'total_trades': 0,
             'winning_trades': 0,
@@ -133,10 +133,10 @@ class LLMTradingBot:
             'total_fees': 0,
             'long_trades': 0,
             'short_trades': 0,
+            'won_long_trades': 0,  # ✅ DODANE
+            'won_short_trades': 0, # ✅ DODANE
             'avg_holding_time': 0,
-            'portfolio_utilization': 0,
-            'won_long_trades': 0,
-            'won_short_trades': 0
+            'portfolio_utilization': 0
         }
         
         # DASHBOARD
@@ -964,13 +964,17 @@ class LLMTradingBot:
         
         self.positions[position_id] = position
         
-        if not self.real_trading:
-            self.virtual_balance -= margin_required
-        
+        # ✅ POPRAWIONE: Aktualizacja statystyk przy OTWIERANIU pozycji
         if signal == "LONG":
             self.stats['long_trades'] += 1
         else:
             self.stats['short_trades'] += 1
+        
+        # ✅ DODANE: Inkrementacja total_trades przy otwarciu
+        self.stats['total_trades'] += 1
+        
+        if not self.real_trading:
+            self.virtual_balance -= margin_required
         
         tp_distance = (exit_plan['take_profit'] - current_price) / current_price * 100
         sl_distance = (current_price - exit_plan['stop_loss']) / current_price * 100
@@ -1191,11 +1195,17 @@ class LLMTradingBot:
         
         self.trade_history.append(trade_record)
         
-        self.stats['total_trades'] += 1
+        # ✅ POPRAWIONE: Aktualizacja statystyk przy ZAMYKANIU pozycji
+        # NIE inkrementujemy total_trades tutaj (już zrobione przy otwarciu)
         self.stats['total_pnl'] += realized_pnl_after_fee
         
         if realized_pnl_after_fee > 0:
             self.stats['winning_trades'] += 1
+            # ✅ DODANE: Aktualizacja wygranych long/short trades
+            if position['side'] == "LONG":
+                self.stats['won_long_trades'] += 1
+            else:
+                self.stats['won_short_trades'] += 1
         else:
             self.stats['losing_trades'] += 1
         
@@ -1204,12 +1214,18 @@ class LLMTradingBot:
         self.stats['avg_holding_time'] = total_holding / len(self.trade_history) if self.trade_history else 0
         
         position['status'] = 'CLOSED'
+        
+        # ✅ POPRAWIONE: Aktualizacja net realized P&L
         self.dashboard_data['net_realized'] = self.stats['total_pnl']
         
         margin_return = pnl_pct * self.leverage * 100
         pnl_color = "🟢" if realized_pnl_after_fee > 0 else "🔴"
         trading_mode = "REAL" if position.get('real_trading', False) else "VIRTUAL"
+        
+        # ✅ DODANE: Logowanie statystyk
+        win_rate = (self.stats['winning_trades'] / self.stats['total_trades'] * 100) if self.stats['total_trades'] > 0 else 0
         self.logger.info(f"{pnl_color} {trading_mode} CLOSE: {position['symbol']} {position['side']} - P&L: ${realized_pnl_after_fee:+.2f} ({margin_return:+.1f}% margin) - Reason: {exit_reason}")
+        self.logger.info(f"   📈 STATS UPDATE: Total Trades: {self.stats['total_trades']}, Win Rate: {win_rate:.1f}%, Net P&L: ${self.stats['total_pnl']:.2f}"){realized_pnl_after_fee:+.2f} ({margin_return:+.1f}% margin) - Reason: {exit_reason}")
 
     def get_portfolio_diversity(self) -> float:
         """Oblicza dywersyfikację portfela"""
