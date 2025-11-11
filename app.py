@@ -87,47 +87,6 @@ def get_bot_status():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/debug-eth')
-def debug_eth():
-    """Debug endpoint dla ETH"""
-    try:
-        trading_bot.debug_eth_signal()
-        trading_bot.check_all_conditions_for_eth()
-        return jsonify({'status': 'ETH debug completed'})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/force-open-eth', methods=['POST'])
-def force_open_eth():
-    """Endpoint do wymuszenia otwarcia pozycji ETH"""
-    try:
-        data = request.get_json() or {}
-        side = data.get('side', 'LONG')
-        confidence = float(data.get('confidence', 0.8))
-        
-        position_id = trading_bot.force_open_eth_position(side, confidence)
-        
-        if position_id:
-            return jsonify({
-                'status': 'success',
-                'position_id': position_id,
-                'message': f'ETH {side} position opened successfully'
-            })
-        else:
-            return jsonify({'error': 'Failed to open ETH position'}), 400
-            
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/check-eth-conditions')
-def check_eth_conditions():
-    """Sprawdza warunki dla ETH"""
-    try:
-        can_open = trading_bot.check_all_conditions_for_eth()
-        return jsonify({'can_open': can_open})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-        
 @app.route('/api/debug-positions')
 def debug_positions():
     """Endpoint do debugowania pozycji"""
