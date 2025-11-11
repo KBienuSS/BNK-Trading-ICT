@@ -1345,7 +1345,6 @@ class LLMTradingBot:
                     'leverage': position['leverage'],
                     'margin': position.get('margin', 0),
                     'unrealized_pnl': unrealized_pnl,
-                    'confidence': position.get('confidence', 0.5) * 100,
                     'llm_profile': position.get('llm_profile', self.active_profile),
                     'entry_time': position['entry_time'].strftime('%H:%M:%S'),
                     'exit_plan': exit_plan,
@@ -1375,7 +1374,6 @@ class LLMTradingBot:
                 'realized_pnl': trade['realized_pnl'],
                 'exit_reason': trade['exit_reason'],
                 'llm_profile': trade['llm_profile'],
-                'confidence': trade['confidence'],
                 'holding_hours': round(trade['holding_hours'], 2),
                 'exit_time': trade['exit_time'].strftime('%H:%M:%S'),
                 'real_trading': trade.get('real_trading', False)
