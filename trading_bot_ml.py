@@ -69,7 +69,7 @@ class LLMTradingBot:
         self.price_cache = {}
         self.price_history = {}
         
-        # PROFIL ZACHOWANIA INSPIROWANY LLM (wg Alpha Arena)
+        # PROFIL ZACHOWANIA INSPIROWANY LLM (wg Alpha Arena) - ZMODYFIKOWANE DLA QWEN
         self.llm_profiles = {
             'Claude': {
                 'risk_appetite': 'MEDIUM',
@@ -80,7 +80,11 @@ class LLMTradingBot:
                 'position_sizing': 'CONSERVATIVE',
                 'max_position_size_pct': 0.15,
                 'min_confidence': 0.3,
-                'momentum_threshold': 0.003
+                'momentum_threshold': 0.003,
+                'min_holding_hours': 2,
+                'max_holding_hours': 8,
+                'tp_multiplier': 1.0,
+                'sl_multiplier': 1.0
             },
             'Gemini': {
                 'risk_appetite': 'HIGH', 
@@ -91,7 +95,11 @@ class LLMTradingBot:
                 'position_sizing': 'AGGRESSIVE',
                 'max_position_size_pct': 0.25,
                 'min_confidence': 0.3,
-                'momentum_threshold': 0.002
+                'momentum_threshold': 0.002,
+                'min_holding_hours': 1,
+                'max_holding_hours': 6,
+                'tp_multiplier': 1.2,
+                'sl_multiplier': 0.9
             },
             'GPT': {
                 'risk_appetite': 'LOW',
@@ -102,7 +110,11 @@ class LLMTradingBot:
                 'position_sizing': 'CONSERVATIVE',
                 'max_position_size_pct': 0.10,
                 'min_confidence': 0.3,
-                'momentum_threshold': 0.004
+                'momentum_threshold': 0.004,
+                'min_holding_hours': 2,
+                'max_holding_hours': 10,
+                'tp_multiplier': 0.8,
+                'sl_multiplier': 1.1
             },
             'Qwen': {
                 'risk_appetite': 'HIGH',
@@ -111,9 +123,16 @@ class LLMTradingBot:
                 'holding_bias': 'LONG', 
                 'trade_frequency': 'MEDIUM',
                 'position_sizing': 'VERY_AGGRESSIVE',
-                'max_position_size_pct': 0.30,
-                'min_confidence': 0.3,
-                'momentum_threshold': 0.002
+                'max_position_size_pct': 0.40,  # Zwiększone z 0.30
+                'min_confidence': 0.4,         # Niższy próg wejścia
+                'momentum_threshold': 0.002,
+                'min_holding_hours': 4,        # Wydłużone minimum
+                'max_holding_hours': 24,       # Wydłużone maksimum
+                'tp_multiplier': 1.3,          # Szersze TP
+                'sl_multiplier': 1.2,          # Szersze SL
+                'use_tiered_exits': True,      # System warstwowy
+                'use_trailing_stop': True,     # Trailing stop
+                'use_volatility_based': True   # Bazowanie na ATR
             }
         }
         
@@ -124,7 +143,7 @@ class LLMTradingBot:
         self.max_simultaneous_positions = 4
         self.assets = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'DOGEUSDT']
         
-        # W metodzie __init__ dodaj brakujące klucze:
+        # STATYSTYKI
         self.stats = {
             'total_trades': 0,
             'winning_trades': 0,
@@ -133,8 +152,8 @@ class LLMTradingBot:
             'total_fees': 0,
             'long_trades': 0,
             'short_trades': 0,
-            'won_long_trades': 0,  # ✅ DODANE
-            'won_short_trades': 0, # ✅ DODANE
+            'won_long_trades': 0,
+            'won_short_trades': 0,
             'avg_holding_time': 0,
             'portfolio_utilization': 0
         }
@@ -212,6 +231,234 @@ class LLMTradingBot:
             self.logger.error(f"❌ Error setting leverage for {symbol}: {e}")
             return False
 
+    def calculate_atr(self, symbol: str, period: int = 14) -> float:
+        """Oblicza Average True Range dla danego symbolu używając danych z Bybit"""
+        try:
+            if symbol not in self.price_history or len(self.price_history[symbol]) < period + 1:
+                return 0.02  # fallback 2%
+            
+            prices = [entry['price'] for entry in self.price_history[symbol]]
+            true_ranges = []
+            
+            for i in range(1, len(prices)):
+                high = max(prices[i], prices[i-1])
+                low = min(prices[i], prices[i-1])
+                true_range = high - low
+                true_ranges.append(true_range)
+            
+            # Weź ostatnie N true ranges
+            recent_true_ranges = true_ranges[-period:] if len(true_ranges) >= period else true_ranges
+            atr = np.mean(recent_true_ranges) if recent_true_ranges else 0
+            
+            # Normalizuj do procentów
+            current_price = prices[-1] if prices else 1
+            atr_percent = atr / current_price if current_price > 0 else 0.02
+            
+            return max(min(atr_percent, 0.1), 0.005)  # Limit 0.5% - 10%
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error calculating ATR for {symbol}: {e}")
+            return 0.02
+
+    def calculate_volatility_based_exits(self, symbol: str, entry_price: float, side: str, confidence: float) -> Tuple[float, float]:
+        """Oblicza TP/SL bazujące na zmienności (ATR) - DOSTOSOWANE DO BYBIT"""
+        profile = self.get_current_profile()
+        atr_percent = self.calculate_atr(symbol)
+        
+        # Domyślne multiplikatory
+        if self.active_profile == 'Qwen' and profile.get('use_volatility_based', True):
+            if confidence > 0.8:
+                tp_multiplier = 2.5 * profile['tp_multiplier']
+                sl_multiplier = 1.0 * profile['sl_multiplier']
+            elif confidence > 0.6:
+                tp_multiplier = 2.0 * profile['tp_multiplier']
+                sl_multiplier = 1.2 * profile['sl_multiplier']
+            else:
+                tp_multiplier = 1.5 * profile['tp_multiplier']
+                sl_multiplier = 1.5 * profile['sl_multiplier']
+        else:
+            tp_multiplier = profile['tp_multiplier']
+            sl_multiplier = profile['sl_multiplier']
+        
+        if side == "LONG":
+            take_profit = entry_price * (1 + atr_percent * tp_multiplier)
+            stop_loss = entry_price * (1 - atr_percent * sl_multiplier)
+        else:
+            take_profit = entry_price * (1 - atr_percent * tp_multiplier)
+            stop_loss = entry_price * (1 + atr_percent * sl_multiplier)
+        
+        return take_profit, stop_loss
+
+    def calculate_tiered_exit_plan(self, entry_price: float, side: str, confidence: float) -> List[Dict]:
+        """System warstwowych zysków dla agresywnego Qwen - DOSTOSOWANE DO BYBIT"""
+        profile = self.get_current_profile()
+        
+        if self.active_profile == 'Qwen' and profile.get('use_tiered_exits', False):
+            if confidence > 0.8:
+                tiers = [
+                    {'percent': 0.3, 'tp_pct': 0.010},  # 30% pozycji przy 1%
+                    {'percent': 0.4, 'tp_pct': 0.018},  # 40% przy 1.8%  
+                    {'percent': 0.3, 'tp_pct': 0.025}   # 30% przy 2.5%
+                ]
+            elif confidence > 0.6:
+                tiers = [
+                    {'percent': 0.5, 'tp_pct': 0.008},  # 50% przy 0.8%
+                    {'percent': 0.5, 'tp_pct': 0.015}   # 50% przy 1.5%
+                ]
+            else:
+                tiers = [
+                    {'percent': 0.7, 'tp_pct': 0.006},  # 70% przy 0.6%
+                    {'percent': 0.3, 'tp_pct': 0.012}   # 30% przy 1.2%
+                ]
+            
+            # Konwersja na ceny
+            partial_exits = []
+            for tier in tiers:
+                if side == "LONG":
+                    tp_price = entry_price * (1 + tier['tp_pct'])
+                else:
+                    tp_price = entry_price * (1 - tier['tp_pct'])
+                partial_exits.append({
+                    'price': round(tp_price, 4),
+                    'percent': tier['percent']
+                })
+            
+            return partial_exits
+        else:
+            # Dla innych profili - brak partial exits
+            return []
+
+    def check_partial_exits(self, position_id: str, current_price: float) -> bool:
+        """Sprawdza warunki partial take profits - DOSTOSOWANE DO BYBIT"""
+        position = self.positions[position_id]
+        exit_plan = position.get('exit_plan', {})
+        
+        if not exit_plan.get('partial_exits'):
+            return False
+        
+        for partial_exit in exit_plan['partial_exits']:
+            if partial_exit['price'] in position.get('partial_exits_taken', []):
+                continue
+                
+            if position['side'] == "LONG" and current_price >= partial_exit['price']:
+                return self.execute_partial_exit(position_id, partial_exit)
+            elif position['side'] == "SHORT" and current_price <= partial_exit['price']:
+                return self.execute_partial_exit(position_id, partial_exit)
+        
+        return False
+
+    def execute_partial_exit(self, position_id: str, partial_exit: Dict) -> bool:
+        """Wykonuje partial exit z pozycji - DOSTOSOWANE DO BYBIT"""
+        position = self.positions[position_id]
+        
+        # Oblicz ilość do zamknięcia
+        close_quantity = position['quantity'] * partial_exit['percent']
+        close_quantity_str = self.format_quantity(position['symbol'], close_quantity)
+        
+        if self.real_trading:
+            # Real trading - składamy zlecenie na Bybit
+            success = self.close_bybit_position_partial(position['symbol'], position['side'], close_quantity)
+            if not success:
+                return False
+        else:
+            # Virtual trading - symulacja
+            self.logger.info(f"🟡 VIRTUAL PARTIAL EXIT: {position['symbol']} - {partial_exit['percent']:.0%}")
+        
+        # Aktualizuj pozycję lokalnie
+        position['quantity'] -= close_quantity
+        position['margin'] *= (1 - partial_exit['percent'])  # Zmniejsz margin proporcjonalnie
+        
+        # Oblicz P&L dla partial exit
+        current_price = self.get_current_price(position['symbol'])
+        if position['side'] == "LONG":
+            pnl_pct = (current_price - position['entry_price']) / position['entry_price']
+        else:
+            pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
+        
+        realized_pnl = pnl_pct * close_quantity * position['entry_price'] * position['leverage']
+        fee = abs(realized_pnl) * 0.001
+        realized_pnl_after_fee = realized_pnl - fee
+        
+        # Zwróć margin i P&L
+        returned_margin = position['margin'] * partial_exit['percent']
+        
+        if not self.real_trading:
+            self.virtual_balance += returned_margin + realized_pnl_after_fee
+            self.virtual_capital += realized_pnl_after_fee
+        
+        # Zapisz partial exit
+        if 'partial_exits_taken' not in position:
+            position['partial_exits_taken'] = []
+        position['partial_exits_taken'].append(partial_exit['price'])
+        
+        self.logger.info(f"🟡 PARTIAL EXIT: {position['symbol']} - {partial_exit['percent']:.0%} @ ${current_price:.4f} | P&L: ${realized_pnl_after_fee:+.2f}")
+        
+        return True
+
+    def close_bybit_position_partial(self, symbol: str, side: str, quantity: float) -> bool:
+        """Zamyka część pozycji na Bybit używając pybit"""
+        if not self.real_trading:
+            return True
+            
+        if not self.session:
+            self.logger.error("❌ Brak sesji pybit")
+            return False
+
+        try:
+            close_side = 'Sell' if side == 'LONG' else 'Buy'
+            quantity_str = self.format_quantity(symbol, quantity)
+            
+            response = self.session.place_order(
+                category="linear",
+                symbol=symbol,
+                side=close_side,
+                orderType="Market",
+                qty=quantity_str,
+                timeInForce="GTC",
+                reduceOnly=True,
+            )
+            
+            if response['retCode'] == 0:
+                self.logger.info(f"✅ Partial position closed on Bybit: {symbol} - Qty: {quantity_str}")
+                return True
+            else:
+                error_msg = response.get('retMsg', 'Unknown error')
+                self.logger.error(f"❌ Błąd zamykania części pozycji na Bybit dla {symbol}: {error_msg}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error closing partial Bybit position: {e}")
+            return False
+
+    def update_trailing_stop(self, position_id: str, current_price: float):
+        """Aktualizuje trailing stop dla pozycji - DOSTOSOWANE DO BYBIT"""
+        position = self.positions[position_id]
+        exit_plan = position.get('exit_plan', {})
+        
+        if not exit_plan.get('use_trailing_stop', False):
+            return
+        
+        unrealized_pnl_pct = abs(current_price - position['entry_price']) / position['entry_price']
+        
+        # Sprawdź czy osiągnięto poziom startu trailing
+        if unrealized_pnl_pct >= exit_plan.get('trailing_start', 0.008):
+            if exit_plan.get('original_sl') is None:
+                exit_plan['original_sl'] = exit_plan['stop_loss']
+            
+            # Oblicz nowy stop loss
+            if position['side'] == "LONG":
+                new_sl = current_price * (1 - exit_plan.get('trailing_step', 0.003))
+                # Podnieś SL tylko jeśli wyższy niż obecny
+                if new_sl > exit_plan['stop_loss']:
+                    exit_plan['stop_loss'] = new_sl
+                    self.logger.info(f"📈 TRAILING STOP UPDATED: {position['symbol']} - New SL: ${new_sl:.4f}")
+            else:
+                new_sl = current_price * (1 + exit_plan.get('trailing_step', 0.003))
+                # Obniż SL tylko jeśli niższy niż obecny
+                if new_sl < exit_plan['stop_loss']:
+                    exit_plan['stop_loss'] = new_sl
+                    self.logger.info(f"📈 TRAILING STOP UPDATED: {position['symbol']} - New SL: ${new_sl:.4f}")
+
     def check_available_categories(self):
         """Sprawdza dostępne kategorie dla konta używając pybit"""
         self.logger.info("🔍 Checking available categories...")
@@ -275,7 +522,8 @@ class LLMTradingBot:
         self.logger.info(f"6. BALANCE: ${balance:.2f}")
         
         # Podsumowanie
-        can_open = (price is not None and signal != "HOLD" and confidence > 0.3 and 
+        profile = self.get_current_profile()
+        can_open = (price is not None and signal != "HOLD" and confidence > profile['min_confidence'] and 
                     should_enter and active_positions < self.max_simultaneous_positions and 
                     not has_eth)
         
@@ -310,6 +558,9 @@ class LLMTradingBot:
                 # Użyj unrealized P&L bezpośrednio z Bybit
                 unrealized_pnl = bybit_pos.get('unrealised_pnl', 0)
                 
+                # Oblicz exit plan dla zsynchronizowanej pozycji
+                exit_plan = self.calculate_llm_exit_plan(bybit_pos['entry_price'], 0.5, bybit_pos['side'])
+                
                 new_positions[position_id] = {
                     'symbol': bybit_pos['symbol'],
                     'side': bybit_pos['side'],
@@ -323,10 +574,11 @@ class LLMTradingBot:
                     'llm_profile': self.active_profile,
                     'confidence': 0.5,
                     'margin': bybit_pos.get('position_margin', bybit_pos['size'] * bybit_pos['entry_price'] / bybit_pos['leverage']),
-                    'exit_plan': self.calculate_llm_exit_plan(bybit_pos['entry_price'], 0.5, bybit_pos['side']),
+                    'exit_plan': exit_plan,
                     'liquidation_price': bybit_pos.get('liq_price'),
-                    'unrealized_pnl': unrealized_pnl,  # Używamy rzeczywistego P&L z Bybit
-                    'current_price': current_price
+                    'unrealized_pnl': unrealized_pnl,
+                    'current_price': current_price,
+                    'partial_exits_taken': []  # Dla partial exits
                 }
                 
                 self.logger.info(f"✅ SYNCED: {bybit_pos['symbol']} {bybit_pos['side']} - Size: {bybit_pos['size']}, Entry: ${bybit_pos['entry_price']}, PnL: ${unrealized_pnl:.2f}")
@@ -419,7 +671,7 @@ class LLMTradingBot:
             margin_required = position_value / self.leverage
             self.logger.info(f"🔄 Adjusted position size: ${position_value:.2f}")
         
-        # Przygotuj dane pozycji
+        # Przygotuj dane pozycji z nowym systemem exit plan
         exit_plan = self.calculate_llm_exit_plan(current_price, confidence, side)
         
         if side == "LONG":
@@ -456,7 +708,8 @@ class LLMTradingBot:
             'exit_plan': exit_plan,
             'order_id': order_id,
             'real_trading': self.real_trading,
-            'current_price': current_price
+            'current_price': current_price,
+            'partial_exits_taken': []  # Dla partial exits
         }
         
         self.positions[position_id] = position
@@ -667,14 +920,14 @@ class LLMTradingBot:
         return signal, final_confidence
 
     def calculate_position_size(self, symbol: str, price: float, confidence: float) -> Tuple[float, float, float]:
-        """Oblicza wielkość pozycji w stylu LLM"""
+        """Oblicza wielkość pozycji w stylu LLM - ZMODYFIKOWANE DLA QWEN"""
         profile = self.get_current_profile()
         
         base_allocation = {
             'Claude': 0.15,
             'Gemini': 0.25, 
             'GPT': 0.10,
-            'Qwen': 0.30
+            'Qwen': 0.40  # Zwiększone z 0.30
         }.get(self.active_profile, 0.15)
         
         confidence_multiplier = 0.5 + (confidence * 0.5)
@@ -891,189 +1144,78 @@ class LLMTradingBot:
             self.logger.error(f"❌ Error getting unrealized P&L from Bybit: {e}")
             return 0.0
 
-    def get_bybit_positions_unified(self) -> List[Dict]:
-        """Pobieranie pozycji dla konta UNIFIED"""
-        if not self.real_trading or not self.session:
-            return []
-    
-        try:
-            self.logger.info("🔍 Fetching positions from UNIFIED account...")
-            
-            # Spróbuj pobrać z unified account
-            response = self.session.get_positions(
-                category="linear",
-                settleCoin="USDT"  # Dla unified account zwykle USDT
-            )
-            
-            if response['retCode'] == 0:
-                positions = []
-                for pos in response['result']['list']:
-                    size = float(pos['size'])
-                    if size > 0:
-                        positions.append({
-                            'symbol': pos['symbol'],
-                            'side': 'LONG' if pos['side'] == 'Buy' else 'SHORT',
-                            'size': size,
-                            'entry_price': float(pos['avgPrice']),
-                            'unrealised_pnl': float(pos['unrealisedPnl'])
-                        })
-                return positions
-            return []
-            
-        except Exception as e:
-            self.logger.error(f"❌ Error getting unified positions: {e}")
-            return []
-
-    def debug_bybit_api(self):
-        """Debugowanie API Bybit"""
-        self.logger.info("🐛 DEBUG BYBIT API V5")
-        
-        if not self.session:
-            return {"error": "No session"}
-        
-        try:
-            # Test 1: Pobierz pozycje z różnymi settleCoin
-            results = {}
-            for settle_coin in ['USDT', 'USDC']:
-                try:
-                    response = self.session.get_positions(
-                        category="linear", 
-                        settleCoin=settle_coin
-                    )
-                    results[settle_coin] = {
-                        'retCode': response['retCode'],
-                        'positions_count': len(response['result']['list']),
-                        'positions': [
-                            f"{pos['symbol']} {pos['side']} {pos['size']}" 
-                            for pos in response['result']['list'] 
-                            if float(pos['size']) > 0
-                        ]
-                    }
-                except Exception as e:
-                    results[settle_coin] = {'error': str(e)}
-            
-            return results
-            
-        except Exception as e:
-            return {'error': str(e)}
-        
-    def sync_with_bybit(self):
-        """Synchronizuje stan z rzeczywistymi pozycjami na Bybit"""
-        if not self.real_trading:
-            return
-            
-        try:
-            bybit_positions = self.get_bybit_positions()
-            
-            real_balance = self.get_account_balance()
-            if real_balance:
-                self.virtual_balance = real_balance
-                self.virtual_capital = real_balance
-            
-            real_unrealized_pnl = self.get_bybit_unrealized_pnl()
-            self.dashboard_data['unrealized_pnl'] = real_unrealized_pnl
-            
-            self.sync_local_positions_with_bybit(bybit_positions)
-            
-            self.logger.info(f"🔄 Zsynchronizowano z Bybit - Pozycje: {len(bybit_positions)}, Saldo: ${real_balance:.2f}, Unrealized P&L: ${real_unrealized_pnl:.2f}")
-            
-        except Exception as e:
-            self.logger.error(f"❌ Error syncing with Bybit: {e}")
-
-    def sync_local_positions_with_bybit(self, bybit_positions: List[Dict]):
-        """Synchronizuje lokalne pozycje z pozycjami z Bybit"""
-        bybit_symbols = {pos['symbol'] for pos in bybit_positions}
-        local_active_symbols = {pos['symbol'] for pos in self.positions.values() if pos['status'] == 'ACTIVE'}
-        
-        for bybit_pos in bybit_positions:
-            if bybit_pos['symbol'] not in local_active_symbols:
-                position_id = f"bybit_sync_{bybit_pos['symbol']}_{int(time.time())}"
-                self.positions[position_id] = {
-                    'symbol': bybit_pos['symbol'],
-                    'side': bybit_pos['side'],
-                    'entry_price': bybit_pos['entry_price'],
-                    'quantity': bybit_pos['size'],
-                    'leverage': bybit_pos['leverage'],
-                    'entry_time': bybit_pos['created_time'],
-                    'status': 'ACTIVE',
-                    'order_id': f"bybit_sync_{bybit_pos['symbol']}",
-                    'real_trading': True,
-                    'llm_profile': self.active_profile,
-                    'confidence': 0.5,
-                    'margin': bybit_pos['position_margin'],
-                    'exit_plan': self.calculate_llm_exit_plan(bybit_pos['entry_price'], 0.5, bybit_pos['side']),
-                    'liquidation_price': bybit_pos['liq_price'],
-                    'unrealized_pnl': bybit_pos['unrealised_pnl'],
-                    'current_price': self.get_current_price(bybit_pos['symbol'])
-                }
-                self.logger.info(f"🔄 Dodano zsynchronizowaną pozycję z Bybit: {bybit_pos['symbol']} {bybit_pos['side']}")
-        
-        for position_id, position in list(self.positions.items()):
-            if (position['status'] == 'ACTIVE' and position.get('real_trading', False) and 
-                position['symbol'] not in bybit_symbols):
-                position['status'] = 'CLOSED'
-                self.logger.info(f"🔄 Oznaczono pozycję jako zamkniętą: {position['symbol']}")
-
     def calculate_llm_exit_plan(self, entry_price: float, confidence: float, side: str) -> Dict:
-        """Oblicza plan wyjścia w stylu LLM"""
+        """Oblicza plan wyjścia w stylu LLM - ZMODYFIKOWANE DLA QWEN"""
         profile = self.get_current_profile()
         
-        if confidence > 0.7:
-            if side == "LONG":
-                take_profit = entry_price * 1.018
-                stop_loss = entry_price * 0.992
-            else:
-                take_profit = entry_price * 0.982
-                stop_loss = entry_price * 1.008
-        elif confidence > 0.5:
-            if side == "LONG":
-                take_profit = entry_price * 1.012
-                stop_loss = entry_price * 0.994
-            else:
-                take_profit = entry_price * 0.988
-                stop_loss = entry_price * 1.006
+        # SPECJALNE TRAJTOWANIE QWEN - volatility based exits
+        if self.active_profile == 'Qwen' and profile.get('use_volatility_based', True):
+            take_profit, stop_loss = self.calculate_volatility_based_exits(
+                'BTCUSDT', entry_price, side, confidence  # Używamy BTC jako proxy dla volatility
+            )
         else:
-            if side == "LONG":
-                take_profit = entry_price * 1.008
-                stop_loss = entry_price * 0.996
+            # Standardowe obliczenia dla innych profili
+            if confidence > 0.7:
+                if side == "LONG":
+                    take_profit = entry_price * 1.018
+                    stop_loss = entry_price * 0.992
+                else:
+                    take_profit = entry_price * 0.982
+                    stop_loss = entry_price * 1.008
+            elif confidence > 0.5:
+                if side == "LONG":
+                    take_profit = entry_price * 1.012
+                    stop_loss = entry_price * 0.994
+                else:
+                    take_profit = entry_price * 0.988
+                    stop_loss = entry_price * 1.006
             else:
-                take_profit = entry_price * 0.992
-                stop_loss = entry_price * 1.004
+                if side == "LONG":
+                    take_profit = entry_price * 1.008
+                    stop_loss = entry_price * 0.996
+                else:
+                    take_profit = entry_price * 0.992
+                    stop_loss = entry_price * 1.004
         
-        risk_multiplier = {
-            'LOW': 0.8,
-            'MEDIUM': 1.0,
-            'HIGH': 1.2
-        }.get(profile['risk_appetite'], 1.0)
+        # Zastosuj multiplikatory profilu
+        take_profit = entry_price + (take_profit - entry_price) * profile['tp_multiplier']
+        stop_loss = entry_price + (stop_loss - entry_price) * profile['sl_multiplier']
         
-        if side == "LONG":
-            take_profit = entry_price + (take_profit - entry_price) * risk_multiplier
-            stop_loss = entry_price - (entry_price - stop_loss) * risk_multiplier
-        else:
-            take_profit = entry_price - (entry_price - take_profit) * risk_multiplier
-            stop_loss = entry_price + (stop_loss - entry_price) * risk_multiplier
+        # Oblicz partial exits dla Qwen
+        partial_exits = self.calculate_tiered_exit_plan(entry_price, side, confidence)
         
-        return {
+        exit_plan = {
             'take_profit': round(take_profit, 4),
             'stop_loss': round(stop_loss, 4),
             'invalidation': entry_price * 0.98 if side == "LONG" else entry_price * 1.02,
-            'max_holding_hours': random.randint(1, 6)
+            'max_holding_hours': random.randint(profile['min_holding_hours'], profile['max_holding_hours']),
+            'partial_exits': partial_exits,
+            'use_trailing_stop': profile.get('use_trailing_stop', False),
+            'trailing_start': 0.008 if self.active_profile == 'Qwen' else 0.012,
+            'trailing_step': 0.003 if self.active_profile == 'Qwen' else 0.005,
+            'original_sl': None  # Do trailing stop
         }
+        
+        return exit_plan
        
     def should_enter_trade(self) -> bool:
-        """Decyduje czy wejść w transakcję wg profilu częstotliwości"""
+        """Decyduje czy wejść w transakcję wg profilu częstotliwości - ZMODYFIKOWANE"""
         profile = self.get_current_profile()
         
         frequency_chance = {
-            'LOW': 0.3,
-            'MEDIUM': 0.5,
-            'HIGH': 0.7
-        }.get(profile['trade_frequency'], 0.5)
+            'LOW': 0.2,        # Zmniejszone
+            'MEDIUM': 0.3,     # Zmniejszone  
+            'HIGH': 0.5        # Zmniejszone
+        }.get(profile['trade_frequency'], 0.3)
+        
+        # DODATKOWY FILTR DLA QWEN - mniej, ale większe pozycje
+        if self.active_profile == 'Qwen' and len([p for p in self.positions.values() if p['status'] == 'ACTIVE']) >= 2:
+            return False  # Qwen powinien trzymać 1-2 pozycje
         
         return random.random() < frequency_chance
 
     def open_llm_position(self, symbol: str):
-        """UPROSZCZONE otwieranie pozycji jak w drugim bocie"""
+        """UPROSZCZONE otwieranie pozycji jak w drugim bocie - ZMODYFIKOWANE DLA QWEN"""
         self.logger.info(f"🔧 ATTEMPTING TO OPEN: {symbol}")
         
         if not self.should_enter_trade():
@@ -1085,7 +1227,10 @@ class LLMTradingBot:
             return None
             
         signal, confidence = self.generate_llm_signal(symbol)
-        if signal == "HOLD" or confidence < 0.3:
+        
+        # Sprawdź próg confidence dla profilu
+        profile = self.get_current_profile()
+        if signal == "HOLD" or confidence < profile['min_confidence']:
             return None
             
         # ✅ SPRAWDŹ CZY JUŻ MASZ AKTYWNĄ POZYCJĘ DLA TEGO SYMBOLU
@@ -1117,7 +1262,7 @@ class LLMTradingBot:
             self.logger.warning(f"💰 Insufficient balance for {symbol}")
             return None
             
-        # ✅ UPROSZCZONE TWORZENIE POZYCJI
+        # ✅ UPROSZCZONE TWORZENIE POZYCJI Z NOWYM SYSTEMEM EXIT PLAN
         exit_plan = self.calculate_llm_exit_plan(current_price, confidence, signal)
         
         if signal == "LONG":
@@ -1153,7 +1298,8 @@ class LLMTradingBot:
             'exit_plan': exit_plan,
             'order_id': order_id,
             'real_trading': self.real_trading,
-            'current_price': current_price  # ✅ ZAPISZ CENĘ OD RAZU
+            'current_price': current_price,  # ✅ ZAPISZ CENĘ OD RAZU
+            'partial_exits_taken': []  # Dla partial exits
         }
         
         self.positions[position_id] = position
@@ -1172,10 +1318,13 @@ class LLMTradingBot:
         self.logger.info(f"🎯 OPENED: {symbol} {signal} @ ${current_price:.4f}")
         self.logger.info(f"   ⏰ Max holding time: {exit_plan['max_holding_hours']}h")
         
+        if exit_plan['partial_exits']:
+            self.logger.info(f"   📈 Partial exits configured: {len(exit_plan['partial_exits'])} tiers")
+        
         return position_id
 
     def update_positions_pnl(self):
-        """POPRAWIONE aktualizowanie P&L"""
+        """POPRAWIONE aktualizowanie P&L Z NOWYMI FUNKCJAMI"""
         total_unrealized = 0
         total_margin = 0
         total_confidence = 0
@@ -1205,6 +1354,10 @@ class LLMTradingBot:
                         position['unrealized_pnl'] = unrealized_pnl
                         position['current_price'] = current_price
                         
+                        # NOWE: Aktualizuj trailing stop i sprawdź partial exits
+                        self.update_trailing_stop(position['symbol'], current_price)
+                        self.check_partial_exits(position['symbol'], current_price)
+                        
                         total_margin += position.get('margin', 0)
                         total_confidence += position.get('confidence', 0)
                         confidence_count += 1
@@ -1227,6 +1380,10 @@ class LLMTradingBot:
                 
                 position['unrealized_pnl'] = unrealized_pnl
                 position['current_price'] = current_price
+                
+                # NOWE: Aktualizuj trailing stop i sprawdź partial exits
+                self.update_trailing_stop(position['symbol'], current_price)
+                self.check_partial_exits(position['symbol'], current_price)
                 
                 total_unrealized += unrealized_pnl
                 total_margin += position.get('margin', 0)
@@ -1298,7 +1455,7 @@ class LLMTradingBot:
         return True  # Zawsze zwracaj True w trybie safe
 
     def check_exit_conditions(self):
-        """Sprawdza warunki wyjścia z pozycji - PROSTA WERSJA jak w drugim bocie"""
+        """Sprawdza warunki wyjścia z pozycji - PROSTA WERSJA Z NOWYMI FUNKCJAMI"""
         positions_to_close = []
         
         for position_id, position in self.positions.items():
@@ -1360,7 +1517,7 @@ class LLMTradingBot:
         return positions_to_close
 
     def close_position(self, position_id: str, exit_reason: str, exit_price: float):
-        """Zamyka pozycję"""
+        """Zamyka pozycję - ZMODYFIKOWANE DLA PARTIAL EXITS"""
         position = self.positions[position_id]
         
         if position['side'] == 'LONG':
@@ -1396,7 +1553,8 @@ class LLMTradingBot:
             'entry_time': position['entry_time'],
             'exit_time': datetime.now(),
             'holding_hours': (datetime.now() - position['entry_time']).total_seconds() / 3600,
-            'real_trading': position.get('real_trading', False)
+            'real_trading': position.get('real_trading', False),
+            'partial_exits_taken': len(position.get('partial_exits_taken', []))  # DODANE: liczba partial exits
         }
         
         self.trade_history.append(trade_record)
@@ -1428,10 +1586,13 @@ class LLMTradingBot:
         pnl_color = "🟢" if realized_pnl_after_fee > 0 else "🔴"
         trading_mode = "REAL" if position.get('real_trading', False) else "VIRTUAL"
         
-        # ✅ DODANE: Logowanie statystyk (POPRAWIONA LINIA - usunięto zduplikowaną część)
+        # ✅ DODANE: Logowanie statystyk z uwzględnieniem partial exits
+        partial_exits_count = len(position.get('partial_exits_taken', []))
         win_rate = (self.stats['winning_trades'] / self.stats['total_trades'] * 100) if self.stats['total_trades'] > 0 else 0
         self.logger.info(f"{pnl_color} {trading_mode} CLOSE: {position['symbol']} {position['side']} - P&L: ${realized_pnl_after_fee:+.2f} ({margin_return:+.1f}% margin) - Reason: {exit_reason}")
-        self.logger.info(f"   📈 STATS UPDATE: Total Trades: {self.stats['total_trades']}, Win Rate: {win_rate:.1f}%, Net P&L: ${self.stats['total_pnl']:.2f}")
+        if partial_exits_count > 0:
+            self.logger.info(f"   📈 Partial exits taken: {partial_exits_count}")
+        self.logger.info(f"   📊 STATS UPDATE: Total Trades: {self.stats['total_trades']}, Win Rate: {win_rate:.1f}%, Net P&L: ${self.stats['total_pnl']:.2f}")
 
     def get_portfolio_diversity(self) -> float:
         """Oblicza dywersyfikację portfela"""
@@ -1505,7 +1666,7 @@ class LLMTradingBot:
         return status
 
     def get_dashboard_data(self):
-        """POPRAWIONE przygotowywanie danych dla dashboardu"""
+        """POPRAWIONE przygotowywanie danych dla dashboardu Z NOWYMI FUNKCJAMI"""
         self.logger.info("🔄 Generating dashboard data...")
         
         api_status = self.check_api_status()
@@ -1556,7 +1717,9 @@ class LLMTradingBot:
                     'exit_plan': exit_plan,
                     'tp_distance_pct': round(tp_distance_pct, 2),
                     'sl_distance_pct': round(sl_distance_pct, 2),
-                    'real_trading': position.get('real_trading', False)
+                    'real_trading': position.get('real_trading', False),
+                    'partial_exits_taken': len(position.get('partial_exits_taken', [])),  # DODANE: partial exits
+                    'use_trailing_stop': exit_plan.get('use_trailing_stop', False)  # DODANE: trailing stop info
                 })
         
         self.logger.info(f"📊 DASHBOARD: {len(active_positions)} active positions to display")
@@ -1582,7 +1745,8 @@ class LLMTradingBot:
                 'llm_profile': trade['llm_profile'],
                 'holding_hours': round(trade['holding_hours'], 2),
                 'exit_time': trade['exit_time'].strftime('%H:%M:%S'),
-                'real_trading': trade.get('real_trading', False)
+                'real_trading': trade.get('real_trading', False),
+                'partial_exits': trade.get('partial_exits_taken', 0)  # DODANE: partial exits
             })
         
         total_trades = self.stats['total_trades']
@@ -1651,7 +1815,7 @@ class LLMTradingBot:
         return self.chart_data
 
     def run_llm_trading_strategy(self):
-        """Główna pętla strategii LLM"""
+        """Główna pętla strategii LLM Z NOWYMI FUNKCJAMI"""
         self.logger.info("🚀 STARTING LLM TRADING STRATEGY")
         
         self.logger.info("🔧 RUNNING API TESTS...")
@@ -1807,4 +1971,5 @@ if __name__ == '__main__':
     print("🧠 LLM Profiles: Claude, Gemini, GPT, Qwen")
     print("📈 Trading assets: BTC, ETH, SOL, XRP, BNB, DOGE")
     print("💹 Using REAL-TIME prices from Bybit API only")
+    print("🎯 Qwen Profile Features: Extended holding periods, Tiered exits, Volatility-based TP/SL")
     app.run(debug=True, host='0.0.0.0', port=5000)
