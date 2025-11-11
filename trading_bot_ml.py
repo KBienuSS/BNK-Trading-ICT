@@ -299,7 +299,143 @@ class LLMTradingBot:
             self.logger.error(f"❌ SYNC ERROR: {e}")
             import traceback
             self.logger.error(f"❌ Stack trace: {traceback.format_exc()}")
+
+    def debug_eth_signal(self):
+        """Debugowanie sygnału dla ETHUSDT"""
+        self.logger.info("🔍 DEBUG ETHUSDT SIGNAL...")
         
+        # Sprawdź cenę
+        eth_price = self.get_current_price("ETHUSDT")
+        self.logger.info(f"💰 ETHUSDT Price: ${eth_price}")
+        
+        # Sprawdź historię cen
+        if "ETHUSDT" in self.price_history:
+            history = self.price_history["ETHUSDT"]
+            self.logger.info(f"📊 ETH Price History: {len(history)} entries")
+            if len(history) >= 2:
+                momentum = (history[-1]['price'] - history[-2]['price']) / history[-2]['price']
+                self.logger.info(f"📈 ETH Momentum: {momentum:.4%}")
+        
+        # Generuj sygnał
+        signal, confidence = self.generate_llm_signal("ETHUSDT")
+        self.logger.info(f"🎯 ETH Signal: {signal}, Confidence: {confidence:.1%}")
+        
+        # Sprawdź warunki wejścia
+        should_enter = self.should_enter_trade()
+        active_positions = sum(1 for p in self.positions.values() if p['status'] == 'ACTIVE')
+        has_eth_position = any(p['symbol'] == "ETHUSDT" and p['status'] == 'ACTIVE' 
+                              for p in self.positions.values())
+        
+        self.logger.info(f"📊 Entry Conditions:")
+        self.logger.info(f"   - Should enter: {should_enter}")
+        self.logger.info(f"   - Active positions: {active_positions}/{self.max_simultaneous_positions}")
+        self.logger.info(f"   - Has ETH position: {has_eth_position}")
+        self.logger.info(f"   - Signal not HOLD: {signal != 'HOLD'}")
+        self.logger.info(f"   - Confidence > 0.3: {confidence > 0.3}")
+        
+        return signal, confidence
+
+    def force_open_eth_position(self, side="LONG", confidence=0.8):
+        """Wymusza otwarcie pozycji na ETH"""
+        self.logger.info(f"🚀 FORCE OPENING ETH POSITION: {side}")
+        
+        symbol = "ETHUSDT"
+        
+        # Sprawdź czy już masz pozycję
+        existing_position = any(
+            p['symbol'] == symbol and p['status'] == 'ACTIVE' 
+            for p in self.positions.values()
+        )
+        
+        if existing_position:
+            self.logger.warning(f"⚠️ Already have active position for {symbol}")
+            return None
+        
+        # Pobierz cenę
+        current_price = self.get_current_price(symbol)
+        if not current_price:
+            self.logger.error(f"❌ Could not get price for {symbol}")
+            return None
+        
+        # Oblicz wielkość pozycji
+        quantity, position_value, margin_required = self.calculate_position_size(
+            symbol, current_price, confidence
+        )
+        
+        # Sprawdź balans
+        if self.real_trading:
+            real_balance = self.get_account_balance()
+            available_balance = real_balance if real_balance else self.virtual_balance
+        else:
+            available_balance = self.virtual_balance
+            
+        if margin_required > available_balance:
+            self.logger.warning(f"💰 Insufficient balance. Required: ${margin_required:.2f}, Available: ${available_balance:.2f}")
+            # Zmniejsz wielkość pozycji
+            position_value = available_balance * 0.8  # użyj 80% dostępnego balansu
+            quantity = position_value / current_price
+            margin_required = position_value / self.leverage
+            self.logger.info(f"🔄 Adjusted position size: ${position_value:.2f}")
+        
+        # Przygotuj dane pozycji
+        exit_plan = self.calculate_llm_exit_plan(current_price, confidence, side)
+        
+        if side == "LONG":
+            liquidation_price = current_price * (1 - 0.9 / self.leverage)
+        else:
+            liquidation_price = current_price * (1 + 0.9 / self.leverage)
+        
+        # Składanie zlecenia
+        order_id = None
+        if self.real_trading:
+            order_id = self.place_bybit_order(symbol, side, quantity, current_price)
+            if not order_id:
+                self.logger.error("❌ Failed to place order on Bybit")
+                return None
+        else:
+            order_id = f"forced_eth_{int(time.time())}"
+        
+        position_id = order_id
+        
+        # Zapisz pozycję
+        position = {
+            'symbol': symbol,
+            'side': side,
+            'entry_price': current_price,
+            'quantity': quantity,
+            'leverage': self.leverage,
+            'margin': margin_required,
+            'liquidation_price': liquidation_price,
+            'entry_time': datetime.now(),
+            'status': 'ACTIVE',
+            'unrealized_pnl': 0,
+            'confidence': confidence,
+            'llm_profile': self.active_profile,
+            'exit_plan': exit_plan,
+            'order_id': order_id,
+            'real_trading': self.real_trading,
+            'current_price': current_price
+        }
+        
+        self.positions[position_id] = position
+        
+        # Aktualizuj statystyki
+        if side == "LONG":
+            self.stats['long_trades'] += 1
+        else:
+            self.stats['short_trades'] += 1
+        
+        self.stats['total_trades'] += 1
+        
+        if not self.real_trading:
+            self.virtual_balance -= margin_required
+        
+        self.logger.info(f"✅ FORCE OPENED: ETHUSDT {side} @ ${current_price:.2f}")
+        self.logger.info(f"   📏 Size: ${position_value:.2f}, Qty: {quantity:.4f}")
+        self.logger.info(f"   🎯 TP: ${exit_plan['take_profit']:.2f}, SL: ${exit_plan['stop_loss']:.2f}")
+        
+        return position_id
+    
     def get_account_balance(self) -> Optional[float]:
         """Pobiera rzeczywiste saldo konta z Bybit używając pybit"""
         if not self.real_trading:
