@@ -241,6 +241,48 @@ class LLMTradingBot:
         self.logger.info(f"📊 Available categories: {available_categories}")
         return available_categories
 
+    def check_all_conditions_for_eth(self):
+        """Sprawdza wszystkie warunki dla ETH"""
+        self.logger.info("🔍 CHECKING ALL CONDITIONS FOR ETHUSDT...")
+        
+        symbol = "ETHUSDT"
+        
+        # 1. Cena
+        price = self.get_current_price(symbol)
+        self.logger.info(f"1. PRICE: ${price}" if price else "1. PRICE: ❌ Unavailable")
+        
+        # 2. Sygnał
+        signal, confidence = self.generate_llm_signal(symbol)
+        self.logger.info(f"2. SIGNAL: {signal} (Confidence: {confidence:.1%})")
+        
+        # 3. Częstotliwość tradingu
+        should_enter = self.should_enter_trade()
+        self.logger.info(f"3. TRADE FREQUENCY: {should_enter}")
+        
+        # 4. Aktywne pozycje
+        active_positions = sum(1 for p in self.positions.values() if p['status'] == 'ACTIVE')
+        self.logger.info(f"4. ACTIVE POSITIONS: {active_positions}/{self.max_simultaneous_positions}")
+        
+        # 5. Czy już ma ETH
+        has_eth = any(p['symbol'] == symbol and p['status'] == 'ACTIVE' for p in self.positions.values())
+        self.logger.info(f"5. HAS ETH POSITION: {has_eth}")
+        
+        # 6. Balans
+        if self.real_trading:
+            balance = self.get_account_balance()
+        else:
+            balance = self.virtual_balance
+        self.logger.info(f"6. BALANCE: ${balance:.2f}")
+        
+        # Podsumowanie
+        can_open = (price is not None and signal != "HOLD" and confidence > 0.3 and 
+                    should_enter and active_positions < self.max_simultaneous_positions and 
+                    not has_eth)
+        
+        self.logger.info(f"🎯 CAN OPEN ETH POSITION: {'✅ YES' if can_open else '❌ NO'}")
+        
+        return can_open
+    
     def sync_all_positions_with_bybit(self):
         """POPRAWIONA synchronizacja pozycji z Bybit"""
         if not self.real_trading:
