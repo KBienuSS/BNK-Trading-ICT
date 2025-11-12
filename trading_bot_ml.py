@@ -1370,7 +1370,7 @@ class LLMTradingBot:
         frequency_chance = {
             'LOW': 0.2,        # Zmniejszone
             'MEDIUM': 0.3,     # Zmniejszone  
-            'HIGH': 0.5        # Zmniejszone
+            'HIGH': 0.8        # Zmniejszone
         }.get(profile['trade_frequency'], 0.3)
         
         # DODATKOWY FILTR DLA QWEN - mniej, ale większe pozycje
