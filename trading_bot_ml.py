@@ -260,6 +260,109 @@ class LLMTradingBot:
             self.logger.error(f"❌ Error calculating ATR for {symbol}: {e}")
             return 0.02
 
+    def calculate_dynamic_sl(self, symbol: str, entry_price: float, side: str, confidence: float) -> float:
+        """Oblicza dynamiczny Stop Loss bazujący na ATR - TAK SAMO JAK W VIRTUAL"""
+        profile = self.get_current_profile()
+        
+        # ✅ TA SAMA LOGIKA CO W VIRTUAL TRADING
+        atr_percent = self.calculate_atr(symbol)
+        
+        if self.active_profile == 'Qwen' and profile.get('use_volatility_based', True):
+            if confidence > 0.8:
+                sl_multiplier = 1.0 * profile['sl_multiplier']
+            elif confidence > 0.6:
+                sl_multiplier = 1.2 * profile['sl_multiplier']
+            else:
+                sl_multiplier = 1.5 * profile['sl_multiplier']
+        else:
+            sl_multiplier = profile['sl_multiplier']
+        
+        # Oblicz SL na podstawie ATR
+        if side == "LONG":
+            stop_loss = entry_price * (1 - atr_percent * sl_multiplier)
+        else:
+            stop_loss = entry_price * (1 + atr_percent * sl_multiplier)
+        
+        self.logger.info(f"🎯 DYNAMIC SL CALCULATED: {symbol} {side} - ATR: {atr_percent:.3%}, Multiplier: {sl_multiplier:.1f}, SL: ${stop_loss:.2f}")
+        
+        return stop_loss
+
+    def place_bybit_order_with_dynamic_sl(self, symbol: str, side: str, quantity: float, price: float, confidence: float) -> Tuple[Optional[str], Optional[float]]:
+        """Składa zlecenie na Bybit Z DYNAMICZNYM STOP-LOSSEM (ATR-based)"""
+        
+        self.logger.info(f"🚀 PLACE_BYBIT_ORDER_WITH_DYNAMIC_SL: {symbol} {side}")
+        
+        if not self.real_trading:
+            order_id = f"virtual_{int(time.time())}"
+            self.logger.info(f"🔄 Virtual order with dynamic SL: {order_id}")
+            return order_id, None
+        
+        if not self.session:
+            self.logger.error("❌ Brak sesji pybit")
+            return None, None
+        
+        try:
+            self.set_leverage(symbol, self.leverage)
+            quantity_str = self.format_quantity(symbol, quantity)
+            
+            # ✅ OBLICZ DYNAMICZNY SL BAZUJĄCY NA ATR (TAK SAMO JAK W VIRTUAL)
+            stop_loss = self.calculate_dynamic_sl(symbol, price, side, confidence)
+            
+            # Składanie zlecenia z DYNAMICZNYM STOP LOSS
+            response = self.session.place_order(
+                category="linear",
+                symbol=symbol,
+                side="Buy" if side == "LONG" else "Sell",
+                orderType="Market",
+                qty=quantity_str,
+                timeInForce="GTC",
+                stopLoss=str(stop_loss)  # ✅ DYNAMICZNY SL NA BYBIT
+            )
+            
+            if response['retCode'] == 0:
+                order_id = response['result']['orderId']
+                self.logger.info(f"✅ DYNAMIC SL ORDER SUCCESS: {symbol} {side} - Entry: ${price:.2f}, SL: ${stop_loss:.2f}")
+                return order_id, stop_loss  # ✅ ZWRÓĆ RÓWNIEŻ WYLICZONY SL
+            else:
+                error_msg = response.get('retMsg', 'Unknown error')
+                self.logger.error(f"❌ DYNAMIC SL ORDER FAILED: {error_msg}")
+                return None, None
+                
+        except Exception as e:
+            self.logger.error(f"💥 ERROR in place_bybit_order_with_dynamic_sl: {e}")
+            return None, None
+
+    def update_bybit_stop_loss(self, symbol: str, stop_loss: float) -> bool:
+        """Aktualizuje Stop Loss na Bybit - dla trailing stop"""
+        if not self.real_trading:
+            return True
+            
+        if not self.session:
+            self.logger.error("❌ Brak sesji pybit")
+            return False
+
+        try:
+            response = self.session.set_trading_stop(
+                category="linear",
+                symbol=symbol,
+                stopLoss=str(stop_loss),  # ✅ AKTUALIZACJA SL NA BYBIT
+                positionIdx=0
+            )
+            
+            if response['retCode'] == 0:
+                self.logger.info(f"✅ BYBIT SL UPDATED: {symbol} - New SL: ${stop_loss:.2f}")
+                return True
+            else:
+                if response['retCode'] == 10001:  # No position found
+                    return False
+                error_msg = response.get('retMsg', 'Unknown error')
+                self.logger.error(f"❌ BYBIT SL UPDATE FAILED: {error_msg}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error updating Bybit SL: {e}")
+            return False
+
     def calculate_volatility_based_exits(self, symbol: str, entry_price: float, side: str, confidence: float) -> Tuple[float, float]:
         """Oblicza TP/SL bazujące na zmienności (ATR) - DOSTOSOWANE DO BYBIT"""
         profile = self.get_current_profile()
@@ -431,7 +534,7 @@ class LLMTradingBot:
             return False
 
     def update_trailing_stop(self, position_id: str, current_price: float):
-        """Aktualizuje trailing stop dla pozycji - DOSTOSOWANE DO BYBIT"""
+        """Aktualizuje trailing stop - ZACHOWUJĄC LOGIKĘ ATR"""
         position = self.positions[position_id]
         exit_plan = position.get('exit_plan', {})
         
@@ -439,25 +542,50 @@ class LLMTradingBot:
             return
         
         unrealized_pnl_pct = abs(current_price - position['entry_price']) / position['entry_price']
+        trailing_start = exit_plan.get('trailing_start', 0.008)
         
         # Sprawdź czy osiągnięto poziom startu trailing
-        if unrealized_pnl_pct >= exit_plan.get('trailing_start', 0.008):
+        if unrealized_pnl_pct >= trailing_start:
             if exit_plan.get('original_sl') is None:
                 exit_plan['original_sl'] = exit_plan['stop_loss']
             
-            # Oblicz nowy stop loss
+            # ✅ OBLICZ TRAILING STEP BAZUJĄCY NA ATR (TAK SAMO JAK W VIRTUAL)
+            atr_percent = self.calculate_atr(position['symbol'])
+            trailing_step = atr_percent * 0.5  # 50% ATR jako trailing step
+            
             if position['side'] == "LONG":
-                new_sl = current_price * (1 - exit_plan.get('trailing_step', 0.003))
+                new_sl = current_price * (1 - trailing_step)
                 # Podnieś SL tylko jeśli wyższy niż obecny
                 if new_sl > exit_plan['stop_loss']:
+                    old_sl = exit_plan['stop_loss']
                     exit_plan['stop_loss'] = new_sl
-                    self.logger.info(f"📈 TRAILING STOP UPDATED: {position['symbol']} - New SL: ${new_sl:.4f}")
-            else:
-                new_sl = current_price * (1 + exit_plan.get('trailing_step', 0.003))
+                    
+                    # ✅ AKTUALIZUJ NA BYBIT ZACHOWUJĄC LOGIKĘ ATR
+                    if self.real_trading:
+                        success = self.update_bybit_stop_loss(position['symbol'], new_sl)
+                        if success:
+                            self.logger.info(f"📈 ATR TRAILING STOP UPDATED: {position['symbol']} - New SL: ${new_sl:.4f} (ATR-based)")
+                        else:
+                            self.logger.warning(f"⚠️ ATR trailing stop updated locally but failed on Bybit: {position['symbol']}")
+                    else:
+                        self.logger.info(f"📈 ATR TRAILING STOP UPDATED (VIRTUAL): {position['symbol']} - New SL: ${new_sl:.4f}")
+                    
+            else:  # SHORT
+                new_sl = current_price * (1 + trailing_step)
                 # Obniż SL tylko jeśli niższy niż obecny
                 if new_sl < exit_plan['stop_loss']:
+                    old_sl = exit_plan['stop_loss']
                     exit_plan['stop_loss'] = new_sl
-                    self.logger.info(f"📈 TRAILING STOP UPDATED: {position['symbol']} - New SL: ${new_sl:.4f}")
+                    
+                    # ✅ AKTUALIZUJ NA BYBIT ZACHOWUJĄC LOGIKĘ ATR
+                    if self.real_trading:
+                        success = self.update_bybit_stop_loss(position['symbol'], new_sl)
+                        if success:
+                            self.logger.info(f"📈 ATR TRAILING STOP UPDATED: {position['symbol']} - New SL: ${new_sl:.4f} (ATR-based)")
+                        else:
+                            self.logger.warning(f"⚠️ ATR trailing stop updated locally but failed on Bybit: {position['symbol']}")
+                    else:
+                        self.logger.info(f"📈 ATR TRAILING STOP UPDATED (VIRTUAL): {position['symbol']} - New SL: ${new_sl:.4f}")
 
     def check_available_categories(self):
         """Sprawdza dostępne kategorie dla konta używając pybit"""
@@ -532,7 +660,7 @@ class LLMTradingBot:
         return can_open
     
     def sync_all_positions_with_bybit(self):
-        """POPRAWIONA synchronizacja pozycji z Bybit"""
+        """POPRAWIONA synchronizacja pozycji z Bybit - UWZGLĘDNIA SL"""
         if not self.real_trading:
             self.logger.info("🔄 SYNC: Virtual mode - no Bybit sync needed")
             return
@@ -543,6 +671,22 @@ class LLMTradingBot:
             # Pobierz wszystkie pozycje z Bybit
             bybit_positions = self.get_bybit_positions()
             self.logger.info(f"📊 BYBIT POSITIONS: Found {len(bybit_positions)} positions on Bybit")
+            
+            # ✅ DODAJ: Sprawdź aktualne SL dla każdej pozycji na Bybit
+            for bybit_pos in bybit_positions:
+                try:
+                    response = self.session.get_positions(
+                        category="linear",
+                        symbol=bybit_pos['symbol']
+                    )
+                    
+                    if response['retCode'] == 0 and response['result']['list']:
+                        current_bybit_sl = response['result']['list'][0].get('stopLoss')
+                        if current_bybit_sl and current_bybit_sl != '':
+                            bybit_pos['bybit_stop_loss'] = float(current_bybit_sl)
+                            self.logger.info(f"📊 BYBIT SL for {bybit_pos['symbol']}: ${bybit_pos['bybit_stop_loss']:.2f}")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Could not fetch SL from Bybit for {bybit_pos['symbol']}: {e}")
             
             # Tworzymy nowy słownik pozycji
             new_positions = {}
@@ -561,6 +705,11 @@ class LLMTradingBot:
                 # Oblicz exit plan dla zsynchronizowanej pozycji
                 exit_plan = self.calculate_llm_exit_plan(bybit_pos['entry_price'], 0.5, bybit_pos['side'])
                 
+                # ✅ UŻYJ RZECZYWISTEGO SL Z BYBIT JEŚLI JEST DOSTĘPNY
+                if 'bybit_stop_loss' in bybit_pos:
+                    exit_plan['stop_loss'] = bybit_pos['bybit_stop_loss']
+                    self.logger.info(f"🔄 USING ACTUAL BYBIT SL: {bybit_pos['symbol']} - SL: ${exit_plan['stop_loss']:.2f}")
+                
                 new_positions[position_id] = {
                     'symbol': bybit_pos['symbol'],
                     'side': bybit_pos['side'],
@@ -578,10 +727,12 @@ class LLMTradingBot:
                     'liquidation_price': bybit_pos.get('liq_price'),
                     'unrealized_pnl': unrealized_pnl,
                     'current_price': current_price,
-                    'partial_exits_taken': []  # Dla partial exits
+                    'partial_exits_taken': [],
+                    'bybit_sl_set': True,  # ✅ OZNACZENIE CZY SL JEST USTAWIONY NA BYBIT
+                    'sl_calculation_method': 'ATR-based'  # ✅ DODAJ METODĘ OBLICZANIA SL
                 }
                 
-                self.logger.info(f"✅ SYNCED: {bybit_pos['symbol']} {bybit_pos['side']} - Size: {bybit_pos['size']}, Entry: ${bybit_pos['entry_price']}, PnL: ${unrealized_pnl:.2f}")
+                self.logger.info(f"✅ SYNCED: {bybit_pos['symbol']} {bybit_pos['side']} - Size: {bybit_pos['size']}, Entry: ${bybit_pos['entry_price']}, SL: ${exit_plan['stop_loss']:.2f}")
             
             # Zamień stare pozycje na nowe (żeby nie stracić virtual positions)
             old_positions_count = len(self.positions)
@@ -681,11 +832,20 @@ class LLMTradingBot:
         
         # Składanie zlecenia
         order_id = None
+        initial_sl = None
+        
         if self.real_trading:
-            order_id = self.place_bybit_order(symbol, side, quantity, current_price)
+            # REAL TRADING: złoż zlecenie Z DYNAMICZNYM STOP LOSSEM na Bybit
+            order_id, initial_sl = self.place_bybit_order_with_dynamic_sl(
+                symbol, side, quantity, current_price, confidence
+            )
             if not order_id:
                 self.logger.error("❌ Failed to place order on Bybit")
                 return None
+            
+            # ✅ NADPISZ SL W EXIT PLAN TYM WYLICZONYM DYNAMICZNIE
+            exit_plan['stop_loss'] = initial_sl
+            self.logger.info(f"🎯 DYNAMIC SL SET: {symbol} - ATR-based SL: ${initial_sl:.2f}")
         else:
             order_id = f"forced_eth_{int(time.time())}"
         
@@ -709,7 +869,9 @@ class LLMTradingBot:
             'order_id': order_id,
             'real_trading': self.real_trading,
             'current_price': current_price,
-            'partial_exits_taken': []  # Dla partial exits
+            'partial_exits_taken': [],
+            'bybit_sl_set': self.real_trading,  # ✅ OZNACZENIE CZY SL JEST USTAWIONY NA BYBIT
+            'sl_calculation_method': 'ATR-based'  # ✅ DODAJ METODĘ OBLICZANIA SL
         }
         
         self.positions[position_id] = position
@@ -725,9 +887,10 @@ class LLMTradingBot:
         if not self.real_trading:
             self.virtual_balance -= margin_required
         
+        sl_method = "ATR-based DYNAMIC SL" if self.real_trading else "VIRTUAL SL"
         self.logger.info(f"✅ FORCE OPENED: ETHUSDT {side} @ ${current_price:.2f}")
         self.logger.info(f"   📏 Size: ${position_value:.2f}, Qty: {quantity:.4f}")
-        self.logger.info(f"   🎯 TP: ${exit_plan['take_profit']:.2f}, SL: ${exit_plan['stop_loss']:.2f}")
+        self.logger.info(f"   🛑 {sl_method}: ${exit_plan['stop_loss']:.2f}")
         
         return position_id
     
@@ -1145,13 +1308,14 @@ class LLMTradingBot:
             return 0.0
 
     def calculate_llm_exit_plan(self, entry_price: float, confidence: float, side: str) -> Dict:
-        """Oblicza plan wyjścia w stylu LLM - ZMODYFIKOWANE DLA QWEN"""
+        """Oblicza plan wyjścia - JEDNOLITA LOGIKA DLA REAL I VIRTUAL"""
         profile = self.get_current_profile()
         
-        # SPECJALNE TRAJTOWANIE QWEN - volatility based exits
+        # ✅ ZAWSZE UŻYWAJ VOLATILITY-BASED EXITS DLA QWEN (NIEZALEŻNIE OD REAL/VIRTUAL)
         if self.active_profile == 'Qwen' and profile.get('use_volatility_based', True):
+            # Użyj proxy symbol dla obliczenia ATR
             take_profit, stop_loss = self.calculate_volatility_based_exits(
-                'BTCUSDT', entry_price, side, confidence  # Używamy BTC jako proxy dla volatility
+                'BTCUSDT', entry_price, side, confidence
             )
         else:
             # Standardowe obliczenia dla innych profili
@@ -1193,7 +1357,8 @@ class LLMTradingBot:
             'use_trailing_stop': profile.get('use_trailing_stop', False),
             'trailing_start': 0.008 if self.active_profile == 'Qwen' else 0.012,
             'trailing_step': 0.003 if self.active_profile == 'Qwen' else 0.005,
-            'original_sl': None  # Do trailing stop
+            'original_sl': None,
+            'calculation_method': 'ATR-based' if (self.active_profile == 'Qwen' and profile.get('use_volatility_based', True)) else 'Fixed'
         }
         
         return exit_plan
@@ -1215,8 +1380,8 @@ class LLMTradingBot:
         return random.random() < frequency_chance
 
     def open_llm_position(self, symbol: str):
-        """UPROSZCZONE otwieranie pozycji jak w drugim bocie - ZMODYFIKOWANE DLA QWEN"""
-        self.logger.info(f"🔧 ATTEMPTING TO OPEN: {symbol}")
+        """Otwieranie pozycji z DYNAMICZNYM SL (ATR-based)"""
+        self.logger.info(f"🔧 ATTEMPTING TO OPEN WITH DYNAMIC SL: {symbol}")
         
         if not self.should_enter_trade():
             return None
@@ -1228,12 +1393,11 @@ class LLMTradingBot:
             
         signal, confidence = self.generate_llm_signal(symbol)
         
-        # Sprawdź próg confidence dla profilu
         profile = self.get_current_profile()
         if signal == "HOLD" or confidence < profile['min_confidence']:
             return None
             
-        # ✅ SPRAWDŹ CZY JUŻ MASZ AKTYWNĄ POZYCJĘ DLA TEGO SYMBOLU
+        # Sprawdź czy już masz aktywną pozycję
         existing_position = any(
             p['symbol'] == symbol and p['status'] == 'ACTIVE' 
             for p in self.positions.values()
@@ -1247,7 +1411,7 @@ class LLMTradingBot:
             self.logger.info(f"⏸️ Max positions reached ({active_count}/{self.max_simultaneous_positions})")
             return None
             
-        # OBLICZ WIELKOŚĆ POZYCJI
+        # Oblicz wielkość pozycji
         quantity, position_value, margin_required = self.calculate_position_size(
             symbol, current_price, confidence
         )
@@ -1262,7 +1426,7 @@ class LLMTradingBot:
             self.logger.warning(f"💰 Insufficient balance for {symbol}")
             return None
             
-        # ✅ UPROSZCZONE TWORZENIE POZYCJI Z NOWYM SYSTEMEM EXIT PLAN
+        # ✅ UŻYJ TEJ SAMEJ LOGIKI EXIT PLAN CO W VIRTUAL
         exit_plan = self.calculate_llm_exit_plan(current_price, confidence, signal)
         
         if signal == "LONG":
@@ -1270,18 +1434,31 @@ class LLMTradingBot:
         else:
             liquidation_price = current_price * (1 + 0.9 / self.leverage)
         
-        # SKŁADANIE ZLECENIA
+        # ✅ HYBRYD: Użyj dynamicznego SL dla real trading
         order_id = None
+        initial_sl = None
+        
         if self.real_trading:
+            # REAL TRADING: złoż zlecenie Z DYNAMICZNYM STOP LOSSEM na Bybit
+            order_id, initial_sl = self.place_bybit_order_with_dynamic_sl(
+                symbol, signal, quantity, current_price, confidence
+            )
+            if not order_id:
+                return None
+            
+            # ✅ NADPISZ SL W EXIT PLAN TYM WYLICZONYM DYNAMICZNIE
+            exit_plan['stop_loss'] = initial_sl
+            self.logger.info(f"🎯 DYNAMIC SL SET: {symbol} - ATR-based SL: ${initial_sl:.2f}")
+            
+        else:
+            # VIRTUAL TRADING: zwykłe zlecenie (zachowaj starą logikę)
             order_id = self.place_bybit_order(symbol, signal, quantity, current_price)
             if not order_id:
                 return None
-        else:
-            order_id = f"virtual_{int(time.time())}"
         
         position_id = order_id
         
-        # ✅ PROSTE ZAPISANIE POZYCJI LOKALNIE
+        # Zapisz pozycję
         position = {
             'symbol': symbol,
             'side': signal,
@@ -1290,7 +1467,7 @@ class LLMTradingBot:
             'leverage': self.leverage,
             'margin': margin_required,
             'liquidation_price': liquidation_price,
-            'entry_time': datetime.now(),  # ✅ WAŻNE: lokalny czas
+            'entry_time': datetime.now(),
             'status': 'ACTIVE',
             'unrealized_pnl': 0,
             'confidence': confidence,
@@ -1298,8 +1475,10 @@ class LLMTradingBot:
             'exit_plan': exit_plan,
             'order_id': order_id,
             'real_trading': self.real_trading,
-            'current_price': current_price,  # ✅ ZAPISZ CENĘ OD RAZU
-            'partial_exits_taken': []  # Dla partial exits
+            'current_price': current_price,
+            'partial_exits_taken': [],
+            'bybit_sl_set': self.real_trading,  # ✅ OZNACZENIE CZY SL JEST USTAWIONY NA BYBIT
+            'sl_calculation_method': 'ATR-based'  # ✅ DODAJ METODĘ OBLICZANIA SL
         }
         
         self.positions[position_id] = position
@@ -1315,7 +1494,9 @@ class LLMTradingBot:
         if not self.real_trading:
             self.virtual_balance -= margin_required
         
+        sl_method = "ATR-based DYNAMIC SL" if self.real_trading else "VIRTUAL SL"
         self.logger.info(f"🎯 OPENED: {symbol} {signal} @ ${current_price:.4f}")
+        self.logger.info(f"   🛑 {sl_method}: ${exit_plan['stop_loss']:.4f}")
         self.logger.info(f"   ⏰ Max holding time: {exit_plan['max_holding_hours']}h")
         
         if exit_plan['partial_exits']:
@@ -1517,7 +1698,7 @@ class LLMTradingBot:
         return positions_to_close
 
     def close_position(self, position_id: str, exit_reason: str, exit_price: float):
-        """Zamyka pozycję - ZMODYFIKOWANE DLA PARTIAL EXITS"""
+        """Zamyka pozycję - Z INFORMACJĄ O SL"""
         position = self.positions[position_id]
         
         if position['side'] == 'LONG':
@@ -1554,7 +1735,8 @@ class LLMTradingBot:
             'exit_time': datetime.now(),
             'holding_hours': (datetime.now() - position['entry_time']).total_seconds() / 3600,
             'real_trading': position.get('real_trading', False),
-            'partial_exits_taken': len(position.get('partial_exits_taken', []))  # DODANE: liczba partial exits
+            'partial_exits_taken': len(position.get('partial_exits_taken', [])),  # DODANE: liczba partial exits
+            'sl_calculation_method': position.get('sl_calculation_method', 'Fixed')  # DODANE: metoda SL
         }
         
         self.trade_history.append(trade_record)
@@ -1585,11 +1767,12 @@ class LLMTradingBot:
         margin_return = pnl_pct * self.leverage * 100
         pnl_color = "🟢" if realized_pnl_after_fee > 0 else "🔴"
         trading_mode = "REAL" if position.get('real_trading', False) else "VIRTUAL"
+        sl_method = position.get('sl_calculation_method', 'Fixed')
         
-        # ✅ DODANE: Logowanie statystyk z uwzględnieniem partial exits
+        # ✅ DODANE: Logowanie statystyk z uwzględnieniem metody SL
         partial_exits_count = len(position.get('partial_exits_taken', []))
         win_rate = (self.stats['winning_trades'] / self.stats['total_trades'] * 100) if self.stats['total_trades'] > 0 else 0
-        self.logger.info(f"{pnl_color} {trading_mode} CLOSE: {position['symbol']} {position['side']} - P&L: ${realized_pnl_after_fee:+.2f} ({margin_return:+.1f}% margin) - Reason: {exit_reason}")
+        self.logger.info(f"{pnl_color} {trading_mode} CLOSE: {position['symbol']} {position['side']} - P&L: ${realized_pnl_after_fee:+.2f} ({margin_return:+.1f}% margin) - Reason: {exit_reason} ({sl_method} SL)")
         if partial_exits_count > 0:
             self.logger.info(f"   📈 Partial exits taken: {partial_exits_count}")
         self.logger.info(f"   📊 STATS UPDATE: Total Trades: {self.stats['total_trades']}, Win Rate: {win_rate:.1f}%, Net P&L: ${self.stats['total_pnl']:.2f}")
@@ -1666,7 +1849,7 @@ class LLMTradingBot:
         return status
 
     def get_dashboard_data(self):
-        """POPRAWIONE przygotowywanie danych dla dashboardu Z NOWYMI FUNKCJAMI"""
+        """POPRAWIONE przygotowywanie danych dla dashboardu Z INFORMACJĄ O METODZIE SL"""
         self.logger.info("🔄 Generating dashboard data...")
         
         api_status = self.check_api_status()
@@ -1719,7 +1902,10 @@ class LLMTradingBot:
                     'sl_distance_pct': round(sl_distance_pct, 2),
                     'real_trading': position.get('real_trading', False),
                     'partial_exits_taken': len(position.get('partial_exits_taken', [])),  # DODANE: partial exits
-                    'use_trailing_stop': exit_plan.get('use_trailing_stop', False)  # DODANE: trailing stop info
+                    'use_trailing_stop': exit_plan.get('use_trailing_stop', False),  # DODANE: trailing stop info
+                    'bybit_sl_set': position.get('bybit_sl_set', False),
+                    'sl_type': 'BYBIT' if position.get('bybit_sl_set') else 'VIRTUAL',
+                    'sl_calculation': position.get('sl_calculation_method', 'Fixed')  # ✅ DODAJ METODĘ OBLICZANIA
                 })
         
         self.logger.info(f"📊 DASHBOARD: {len(active_positions)} active positions to display")
@@ -1746,7 +1932,8 @@ class LLMTradingBot:
                 'holding_hours': round(trade['holding_hours'], 2),
                 'exit_time': trade['exit_time'].strftime('%H:%M:%S'),
                 'real_trading': trade.get('real_trading', False),
-                'partial_exits': trade.get('partial_exits_taken', 0)  # DODANE: partial exits
+                'partial_exits': trade.get('partial_exits_taken', 0),  # DODANE: partial exits
+                'sl_calculation_method': trade.get('sl_calculation_method', 'Fixed')  # DODANE: metoda SL
             })
         
         total_trades = self.stats['total_trades']
@@ -1972,4 +2159,5 @@ if __name__ == '__main__':
     print("📈 Trading assets: BTC, ETH, SOL, XRP, BNB, DOGE")
     print("💹 Using REAL-TIME prices from Bybit API only")
     print("🎯 Qwen Profile Features: Extended holding periods, Tiered exits, Volatility-based TP/SL")
+    print("🛑 REAL TRADING: ATR-based Dynamic SL + Trailing Stop on Bybit")
     app.run(debug=True, host='0.0.0.0', port=5000)
