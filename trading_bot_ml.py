@@ -198,6 +198,81 @@ class LLMTradingBot:
         self.logger.info(f"📈 Trading assets: {', '.join(self.assets)}")
         self.logger.info(f"🔗 Real Trading: {self.real_trading}")
 
+    def debug_sync_positions(self):
+        """Rozszerzone debugowanie synchronizacji pozycji"""
+        self.logger.info("🔧 EXTENDED SYNC DEBUG...")
+        
+        # 1. Pobierz pozycje bezpośrednio z Bybit
+        if not self.real_trading:
+            self.logger.info("🔄 Virtual mode - skipping Bybit sync")
+            return
+            
+        try:
+            self.logger.info("🔍 Fetching positions directly from Bybit...")
+            
+            # Sprawdź różne kategorie
+            categories = ['linear']
+            all_bybit_positions = []
+            
+            for category in categories:
+                try:
+                    response = self.session.get_positions(
+                        category=category,
+                        settleCoin='USDT'
+                    )
+                    
+                    self.logger.info(f"📨 Bybit API Response for {category}: {response['retCode']}")
+                    
+                    if response['retCode'] == 0:
+                        positions_list = response['result'].get('list', [])
+                        self.logger.info(f"📊 Found {len(positions_list)} positions in {category}")
+                        
+                        for i, pos in enumerate(positions_list):
+                            size = float(pos.get('size', 0))
+                            symbol = pos.get('symbol', 'Unknown')
+                            side = 'LONG' if pos.get('side') == 'Buy' else 'SHORT'
+                            
+                            self.logger.info(f"  📍 Position {i}: {symbol} {side} - Size: {size}")
+                            
+                            if size > 0:
+                                all_bybit_positions.append({
+                                    'symbol': symbol,
+                                    'side': side,
+                                    'size': size,
+                                    'entry_price': float(pos.get('avgPrice', 0)),
+                                    'leverage': float(pos.get('leverage', 1)),
+                                    'unrealised_pnl': float(pos.get('unrealisedPnl', 0)),
+                                    'created_time': pos.get('createdTime'),
+                                    'position_margin': float(pos.get('positionIM', 0))
+                                })
+                                self.logger.info(f"  ✅ ACTIVE: {symbol} {side} Size: {size}")
+                    
+                except Exception as e:
+                    self.logger.error(f"❌ Error checking {category}: {e}")
+            
+            # 2. Porównaj z lokalnymi pozycjami
+            self.logger.info(f"📊 COMPARISON: Bybit has {len(all_bybit_positions)} active positions")
+            self.logger.info(f"📊 COMPARISON: Local has {len([p for p in self.positions.values() if p['status'] == 'ACTIVE'])} active positions")
+            
+            # 3. Szczegółowe logowanie pozycji XRP
+            xrp_on_bybit = any(pos['symbol'] == 'XRPUSDT' for pos in all_bybit_positions)
+            xrp_local = any(pos['symbol'] == 'XRPUSDT' and pos['status'] == 'ACTIVE' for pos in self.positions.values())
+            
+            self.logger.info(f"🎯 XRPUSDT - On Bybit: {xrp_on_bybit}, Local: {xrp_local}")
+            
+            # 4. Jeśli XRP jest na Bybit ale nie lokalnie, dodaj go
+            if xrp_on_bybit and not xrp_local:
+                self.logger.info("🔄 XRP position found on Bybit but not locally - adding...")
+                self.sync_all_positions_with_bybit()
+                
+            return all_bybit_positions
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error in debug_sync_positions: {e}")
+            import traceback
+            self.logger.error(f"❌ Stack trace: {traceback.format_exc()}")
+            return []
+        
     def set_leverage(self, symbol: str, leverage: int) -> bool:
         """Ustawia dźwignię dla symbolu używając pybit"""
         if not self.real_trading:
@@ -660,33 +735,28 @@ class LLMTradingBot:
         return can_open
     
     def sync_all_positions_with_bybit(self):
-        """POPRAWIONA synchronizacja pozycji z Bybit - UWZGLĘDNIA SL"""
+        """POPRAWIONA synchronizacja pozycji z Bybit - ROZSZERZONA"""
         if not self.real_trading:
             self.logger.info("🔄 SYNC: Virtual mode - no Bybit sync needed")
             return
             
-        self.logger.info("🔄 FULL SYNC: Synchronizing all positions with Bybit...")
+        self.logger.info("🔄 ENHANCED SYNC: Synchronizing all positions with Bybit...")
         
         try:
             # Pobierz wszystkie pozycje z Bybit
             bybit_positions = self.get_bybit_positions()
-            self.logger.info(f"📊 BYBIT POSITIONS: Found {len(bybit_positions)} positions on Bybit")
+            self.logger.info(f"📊 BYBIT POSITIONS: Found {len(bybit_positions)} ACTIVE positions on Bybit")
             
-            # ✅ DODAJ: Sprawdź aktualne SL dla każdej pozycji na Bybit
-            for bybit_pos in bybit_positions:
-                try:
-                    response = self.session.get_positions(
-                        category="linear",
-                        symbol=bybit_pos['symbol']
-                    )
-                    
-                    if response['retCode'] == 0 and response['result']['list']:
-                        current_bybit_sl = response['result']['list'][0].get('stopLoss')
-                        if current_bybit_sl and current_bybit_sl != '':
-                            bybit_pos['bybit_stop_loss'] = float(current_bybit_sl)
-                            self.logger.info(f"📊 BYBIT SL for {bybit_pos['symbol']}: ${bybit_pos['bybit_stop_loss']:.2f}")
-                except Exception as e:
-                    self.logger.warning(f"⚠️ Could not fetch SL from Bybit for {bybit_pos['symbol']}: {e}")
+            # Szczegółowe logowanie każdej pozycji
+            for i, pos in enumerate(bybit_positions):
+                self.logger.info(f"  📍 Bybit Position {i}: {pos['symbol']} {pos['side']} - Size: {pos['size']}, Entry: ${pos['entry_price']:.4f}")
+            
+            # Znajdź pozycję XRPUSDT
+            xrp_position = next((p for p in bybit_positions if p['symbol'] == 'XRPUSDT'), None)
+            if xrp_position:
+                self.logger.info(f"🎯 FOUND XRPUSDT on Bybit: {xrp_position['side']} - Size: {xrp_position['size']}, Entry: ${xrp_position['entry_price']:.4f}")
+            else:
+                self.logger.info("❌ XRPUSDT NOT FOUND on Bybit")
             
             # Tworzymy nowy słownik pozycji
             new_positions = {}
@@ -699,16 +769,31 @@ class LLMTradingBot:
                     current_price = bybit_pos.get('mark_price', bybit_pos['entry_price'])
                     self.logger.warning(f"⚠️ Could not get current price for {bybit_pos['symbol']}, using mark price")
                 
-                # Użyj unrealized P&L bezpośrednio z Bybit
-                unrealized_pnl = bybit_pos.get('unrealised_pnl', 0)
+                # Oblicz unrealized P&L
+                if bybit_pos['side'] == 'LONG':
+                    pnl_pct = (current_price - bybit_pos['entry_price']) / bybit_pos['entry_price']
+                    unrealized_pnl = pnl_pct * bybit_pos['size'] * bybit_pos['entry_price'] * bybit_pos['leverage']
+                else:
+                    pnl_pct = (bybit_pos['entry_price'] - current_price) / bybit_pos['entry_price']
+                    unrealized_pnl = pnl_pct * bybit_pos['size'] * bybit_pos['entry_price'] * bybit_pos['leverage']
                 
-                # Oblicz exit plan dla zsynchronizowanej pozycji
+                # Oblicz exit plan
                 exit_plan = self.calculate_llm_exit_plan(bybit_pos['entry_price'], 0.5, bybit_pos['side'])
                 
-                # ✅ UŻYJ RZECZYWISTEGO SL Z BYBIT JEŚLI JEST DOSTĘPNY
-                if 'bybit_stop_loss' in bybit_pos:
-                    exit_plan['stop_loss'] = bybit_pos['bybit_stop_loss']
-                    self.logger.info(f"🔄 USING ACTUAL BYBIT SL: {bybit_pos['symbol']} - SL: ${exit_plan['stop_loss']:.2f}")
+                # Sprawdź aktualny SL na Bybit
+                try:
+                    response = self.session.get_positions(
+                        category="linear",
+                        symbol=bybit_pos['symbol']
+                    )
+                    
+                    if response['retCode'] == 0 and response['result']['list']:
+                        current_bybit_sl = response['result']['list'][0].get('stopLoss')
+                        if current_bybit_sl and current_bybit_sl != '':
+                            exit_plan['stop_loss'] = float(current_bybit_sl)
+                            self.logger.info(f"🎯 USING BYBIT SL: {bybit_pos['symbol']} - SL: ${exit_plan['stop_loss']:.4f}")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Could not fetch SL from Bybit for {bybit_pos['symbol']}: {e}")
                 
                 new_positions[position_id] = {
                     'symbol': bybit_pos['symbol'],
@@ -728,18 +813,24 @@ class LLMTradingBot:
                     'unrealized_pnl': unrealized_pnl,
                     'current_price': current_price,
                     'partial_exits_taken': [],
-                    'bybit_sl_set': True,  # ✅ OZNACZENIE CZY SL JEST USTAWIONY NA BYBIT
-                    'sl_calculation_method': 'ATR-based'  # ✅ DODAJ METODĘ OBLICZANIA SL
+                    'bybit_sl_set': True,
+                    'sl_calculation_method': 'ATR-based'
                 }
                 
-                self.logger.info(f"✅ SYNCED: {bybit_pos['symbol']} {bybit_pos['side']} - Size: {bybit_pos['size']}, Entry: ${bybit_pos['entry_price']}, SL: ${exit_plan['stop_loss']:.2f}")
+                self.logger.info(f"✅ SYNCED: {bybit_pos['symbol']} {bybit_pos['side']} - Size: {bybit_pos['size']}, Entry: ${bybit_pos['entry_price']:.4f}")
             
-            # Zamień stare pozycje na nowe (żeby nie stracić virtual positions)
+            # Zamień stare pozycje na nowe
             old_positions_count = len(self.positions)
             self.positions = new_positions
             
-            self.logger.info(f"🎯 SYNC COMPLETE: {old_positions_count} -> {len(self.positions)} positions synchronized with Bybit")
+            self.logger.info(f"🎯 SYNC COMPLETE: {old_positions_count} -> {len(self.positions)} positions synchronized")
             
+            # Szczegółowe logowanie po synchronizacji
+            active_positions = [p for p in self.positions.values() if p['status'] == 'ACTIVE']
+            self.logger.info(f"📊 AFTER SYNC: {len(active_positions)} active positions:")
+            for pos in active_positions:
+                self.logger.info(f"  📍 {pos['symbol']} {pos['side']} - Entry: ${pos['entry_price']:.4f}, Current: ${pos.get('current_price', 0):.4f}")
+                
         except Exception as e:
             self.logger.error(f"❌ SYNC ERROR: {e}")
             import traceback
