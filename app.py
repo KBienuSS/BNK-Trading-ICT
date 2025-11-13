@@ -300,16 +300,10 @@ def load_chart_data():
 
 @app.route('/api/force-sync', methods=['POST'])
 def force_sync():
-    """Wymusza synchronizację z Bybit"""
     try:
-        if not llm_trading_bot:
-            return jsonify({'error': 'Bot not initialized'}), 500
-            
-        llm_trading_bot.sync_all_positions_with_bybit()
-        app.logger.info("🔄 Forced sync with Bybit")
-        return jsonify({'status': 'Synchronization completed'})
+        trading_bot.sync_all_positions_with_bybit()
+        return jsonify({'status': 'Positions synchronized successfully'})
     except Exception as e:
-        app.logger.error(f"❌ Error forcing sync: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/reinitialize-bot', methods=['POST'])
