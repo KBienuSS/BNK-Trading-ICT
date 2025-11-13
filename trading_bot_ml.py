@@ -54,7 +54,13 @@ class LLMTradingBot:
         else:
             self.real_trading = True
             self.logger.info("🔑 Klucze API Bybit załadowane - REAL TRADING ENABLED")
-        
+            
+        if self.real_trading:
+            try:
+                self.sync_all_positions_with_bybit()
+                self.logger.info("✅ Automatic position sync completed on startup")
+            except Exception as e:
+                self.logger.error(f"❌ Startup sync failed: {e}")
         # Kapitał wirtualny (fallback)
         self.initial_capital = initial_capital
         self.virtual_capital = initial_capital
@@ -2155,6 +2161,10 @@ class LLMTradingBot:
             try:
                 iteration += 1
                 self.logger.info(f"\n🔄 LLM Trading Iteration #{iteration}")
+
+                if iteration % 5 == 0:  # Co 5 iteracji
+                    self.logger.info("🔄 Auto-syncing positions with Bybit...")
+                    self.sync_all_positions_with_bybit()
                 
                 # 1. Aktualizuj P&L
                 self.update_positions_pnl()
