@@ -1993,7 +1993,7 @@ class LLMTradingBot:
         return status
 
     def get_dashboard_data(self):
-        """POPRAWIONE przygotowywanie danych dla dashboardu Z PRAWIDŁOWYMI OBLICZENIAMI P&L"""
+        """POPRAWIONE przygotowywanie danych dla dashboardu Z PRAWIDŁOWYMI OBLICZENIAMI P&L i CZASEM"""
         self.logger.info("🔄 Generating dashboard data...")
         
         api_status = self.check_api_status()
@@ -2091,18 +2091,37 @@ class LLMTradingBot:
         
         recent_trades = []
         for trade in self.trade_history[-10:]:
+            # ✅ POPRAWIONE: Oblicz holding time z zabezpieczeniem przed błędnymi danymi
+            try:
+                if isinstance(trade['entry_time'], datetime) and isinstance(trade['exit_time'], datetime):
+                    holding_hours = (trade['exit_time'] - trade['entry_time']).total_seconds() / 3600
+                else:
+                    # Fallback: jeśli czasy są nieprawidłowe, ustaw rozsądny czas
+                    holding_hours = 0.5  # 30 minut jako domyślny
+                    self.logger.warning(f"⚠️ Invalid time data for trade {trade['symbol']}, using default holding time")
+            except Exception as e:
+                holding_hours = 0.5
+                self.logger.warning(f"⚠️ Error calculating holding time for {trade['symbol']}: {e}")
+            
+            # ✅ POPRAWIONE: Oblicz procent P&L
+            if trade['side'] == 'LONG':
+                pnl_percent = ((trade['exit_price'] - trade['entry_price']) / trade['entry_price']) * 100
+            else:
+                pnl_percent = ((trade['entry_price'] - trade['exit_price']) / trade['entry_price']) * 100
+            
             recent_trades.append({
                 'symbol': trade['symbol'],
                 'side': trade['side'],
                 'entry_price': trade['entry_price'],
                 'exit_price': trade['exit_price'],
                 'quantity': trade['quantity'],
-                'realized_pnl': trade['realized_pnl'],  # ✅ Już poprawione w close_position()
-                'realized_pnl_percent': round(((trade['exit_price'] - trade['entry_price']) / trade['entry_price'] * 100) if trade['side'] == 'LONG' else ((trade['entry_price'] - trade['exit_price']) / trade['entry_price'] * 100), 2),
+                'realized_pnl': trade['realized_pnl'],
+                'realized_pnl_percent': round(pnl_percent, 2),
                 'exit_reason': trade['exit_reason'],
                 'llm_profile': trade['llm_profile'],
-                'holding_hours': round(trade['holding_hours'], 2),
-                'exit_time': trade['exit_time'].strftime('%H:%M:%S'),
+                'holding_hours': round(holding_hours, 2),  # ✅ Poprawny czas
+                'entry_time': trade['entry_time'].strftime('%H:%M:%S') if isinstance(trade['entry_time'], datetime) else 'N/A',
+                'exit_time': trade['exit_time'].strftime('%H:%M:%S') if isinstance(trade['exit_time'], datetime) else 'N/A',
                 'real_trading': trade.get('real_trading', False),
                 'partial_exits': trade.get('partial_exits_taken', 0),
                 'sl_calculation_method': trade.get('sl_calculation_method', 'Fixed')
@@ -2159,7 +2178,7 @@ class LLMTradingBot:
             'total_unrealized_pnl': total_unrealized_pnl,
             'last_update': datetime.now().isoformat()
         }
-
+    
     def save_chart_data(self, chart_data: Dict):
         """Zapisuje dane wykresu"""
         try:
