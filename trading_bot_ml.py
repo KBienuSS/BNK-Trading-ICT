@@ -758,13 +758,6 @@ class LLMTradingBot:
             for i, pos in enumerate(bybit_positions):
                 self.logger.info(f"  📍 Bybit Position {i}: {pos['symbol']} {pos['side']} - Size: {pos['size']}, Entry: ${pos['entry_price']:.4f}")
             
-            # Znajdź pozycję XRPUSDT
-            xrp_position = next((p for p in bybit_positions if p['symbol'] == 'XRPUSDT'), None)
-            if xrp_position:
-                self.logger.info(f"🎯 FOUND XRPUSDT on Bybit: {xrp_position['side']} - Size: {xrp_position['size']}, Entry: ${xrp_position['entry_price']:.4f}")
-            else:
-                self.logger.info("❌ XRPUSDT NOT FOUND on Bybit")
-            
             # Tworzymy nowy słownik pozycji
             new_positions = {}
             
