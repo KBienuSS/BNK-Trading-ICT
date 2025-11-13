@@ -1636,66 +1636,117 @@ class LLMTradingBot:
         return True  # Zawsze zwracaj True w trybie safe
 
     def check_exit_conditions(self):
-        """Sprawdza warunki wyjścia z pozycji - PROSTA WERSJA Z NOWYMI FUNKCJAMI"""
+        """Sprawdza warunki wyjścia z pozycji - NAPRAWIONA WERSJA"""
         positions_to_close = []
         
-        for position_id, position in self.positions.items():
+        for position_id, position in list(self.positions.items()):  # Użyj list() aby uniknąć modyfikacji podczas iteracji
             if position['status'] != 'ACTIVE':
                 continue
                 
-            # ✅ UŻYWAJ LOCAL current_price z pozycji, nie pobieraj ponownie
-            current_price = position.get('current_price')
-            if not current_price:
-                # Tylko jeśli nie ma, pobierz świeżą cenę
-                current_price = self.get_current_price(position['symbol'])
-                if current_price:
-                    position['current_price'] = current_price  # zapisz w pozycji
-                else:
-                    continue  # pomiń jeśli nie można pobrać ceny
+            try:
+                symbol = position['symbol']
+                # ✅ ZAWSZE pobierz świeżą cenę dla dokładnych obliczeń
+                current_price = self.get_current_price(symbol)
+                if not current_price:
+                    self.logger.warning(f"⚠️ Could not get current price for {symbol}")
+                    continue
+                    
+                # ✅ ZAPISZ aktualną cenę w pozycji
+                position['current_price'] = current_price
                 
-            exit_reason = None
-            exit_plan = position.get('exit_plan', {})
-            
-            if not exit_plan:
-                self.logger.warning(f"⚠️ No exit plan for {position_id}, creating default")
-                exit_plan = self.calculate_llm_exit_plan(
-                    position['entry_price'], 
-                    position.get('confidence', 0.5), 
-                    position['side']
-                )
-                position['exit_plan'] = exit_plan
-            
-            # WARUNKI WYJŚCIA
-            if position['side'] == 'LONG':
-                if current_price >= exit_plan['take_profit']:
-                    exit_reason = "TAKE_PROFIT"
-                elif current_price <= exit_plan['stop_loss']:
-                    exit_reason = "STOP_LOSS"
-                elif current_price <= position.get('liquidation_price', 0):
-                    exit_reason = "LIQUIDATION"
-            else:  # SHORT
-                if current_price <= exit_plan['take_profit']:
-                    exit_reason = "TAKE_PROFIT"
-                elif current_price >= exit_plan['stop_loss']:
-                    exit_reason = "STOP_LOSS"
-                elif current_price >= position.get('liquidation_price', float('inf')):
-                    exit_reason = "LIQUIDATION"
-            
-            # ✅ POPRAWIONE: DEBUGUJ CZAS TRZYMANIA
-            holding_time = (datetime.now() - position['entry_time']).total_seconds() / 3600
-            max_holding = exit_plan.get('max_holding_hours', 6)
-            
-            self.logger.info(f"⏰ POSITION TIME: {position['symbol']} - Holding: {holding_time:.2f}h / Max: {max_holding}h")
-            
-            if holding_time > max_holding:
-                exit_reason = "TIME_EXPIRED"
-                self.logger.info(f"🕐 TIME EXPIRED: {position['symbol']} - {holding_time:.2f}h > {max_holding}h")
-            
-            if exit_reason:
-                positions_to_close.append((position_id, exit_reason, current_price))
-                self.logger.info(f"🎯 EXIT CONDITION: {position['symbol']} - {exit_reason}")
+                exit_reason = None
+                exit_plan = position.get('exit_plan', {})
+                
+                if not exit_plan:
+                    self.logger.warning(f"⚠️ No exit plan for {position_id}, creating default")
+                    exit_plan = self.calculate_llm_exit_plan(
+                        position['entry_price'], 
+                        position.get('confidence', 0.5), 
+                        position['side']
+                    )
+                    position['exit_plan'] = exit_plan
+                
+                # ✅ POPRAWIONE WARUNKI WYJŚCIA - DODAJ DEBUG LOGS
+                self.logger.info(f"🔍 CHECKING EXIT: {symbol} {position['side']} | Price: ${current_price:.4f} | TP: ${exit_plan['take_profit']:.4f} | SL: ${exit_plan['stop_loss']:.4f}")
+                
+                if position['side'] == 'LONG':
+                    if current_price >= exit_plan['take_profit']:
+                        exit_reason = "TAKE_PROFIT"
+                        self.logger.info(f"🎯 TP HIT: {symbol} - Current: ${current_price:.4f} >= TP: ${exit_plan['take_profit']:.4f}")
+                    elif current_price <= exit_plan['stop_loss']:
+                        exit_reason = "STOP_LOSS"
+                        self.logger.info(f"🎯 SL HIT: {symbol} - Current: ${current_price:.4f} <= SL: ${exit_plan['stop_loss']:.4f}")
+                else:  # SHORT
+                    if current_price <= exit_plan['take_profit']:
+                        exit_reason = "TAKE_PROFIT"
+                        self.logger.info(f"🎯 TP HIT: {symbol} - Current: ${current_price:.4f} <= TP: ${exit_plan['take_profit']:.4f}")
+                    elif current_price >= exit_plan['stop_loss']:
+                        exit_reason = "STOP_LOSS" 
+                        self.logger.info(f"🎯 SL HIT: {symbol} - Current: ${current_price:.4f} >= SL: ${exit_plan['stop_loss']:.4f}")
+                
+                # ✅ WARUNEK CZASOWY
+                holding_time = (datetime.now() - position['entry_time']).total_seconds() / 3600
+                max_holding = exit_plan.get('max_holding_hours', 6)
+                
+                if holding_time > max_holding:
+                    exit_reason = "TIME_EXPIRED"
+                    self.logger.info(f"🕐 TIME EXPIRED: {symbol} - {holding_time:.2f}h > {max_holding}h")
+                
+                if exit_reason:
+                    positions_to_close.append((position_id, exit_reason, current_price))
+                    self.logger.info(f"🎯 EXIT CONDITION MET: {symbol} - {exit_reason}")
+                    
+            except Exception as e:
+                self.logger.error(f"❌ Error checking exit conditions for {position_id}: {e}")
+                continue
         
         return positions_to_close
+
+    def debug_xrp_position(self):
+        """Debuguje pozycję XRPUSDT i wymusza zamknięcie jeśli warunki są spełnione"""
+        self.logger.info("🔧 DEBUG XRP POSITION...")
+        
+        # Znajdź aktywną pozycję XRPUSDT
+        xrp_position = None
+        position_id = None
+        
+        for pid, pos in self.positions.items():
+            if pos['symbol'] == 'XRPUSDT' and pos['status'] == 'ACTIVE':
+                xrp_position = pos
+                position_id = pid
+                break
+        
+        if not xrp_position:
+            self.logger.info("❌ No active XRPUSDT position found")
+            return
+        
+        # Pobierz aktualną cenę
+        current_price = self.get_current_price('XRPUSDT')
+        if not current_price:
+            self.logger.error("❌ Could not get XRP price")
+            return
+        
+        self.logger.info(f"📊 XRP POSITION DEBUG:")
+        self.logger.info(f"   Side: {xrp_position['side']}")
+        self.logger.info(f"   Entry: ${xrp_position['entry_price']:.4f}")
+        self.logger.info(f"   Current: ${current_price:.4f}")
+        
+        exit_plan = xrp_position.get('exit_plan', {})
+        if exit_plan:
+            self.logger.info(f"   TP: ${exit_plan['take_profit']:.4f}")
+            self.logger.info(f"   SL: ${exit_plan['stop_loss']:.4f}")
+            
+            # Sprawdź warunki ręcznie
+            if xrp_position['side'] == 'SHORT':
+                tp_distance_pct = ((current_price - exit_plan['take_profit']) / current_price) * 100
+                self.logger.info(f"   TP Distance: {tp_distance_pct:.2f}%")
+                
+                if current_price <= exit_plan['take_profit']:
+                    self.logger.info("🎯 MANUAL TP CLOSE: Closing XRP position due to TP condition")
+                    self.close_position(position_id, "TAKE_PROFIT", current_price)
+                    return True
+        
+        return False
 
     def close_position(self, position_id: str, exit_reason: str, exit_price: float):
         """Zamyka pozycję - Z INFORMACJĄ O SL"""
