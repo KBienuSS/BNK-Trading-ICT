@@ -2053,18 +2053,11 @@ class LLMTradingBot:
         return self.chart_data
 
     def run_llm_trading_strategy(self):
-        """Główna pętla strategii LLM Z NOWYMI FUNKCJAMI"""
-        self.logger.info("🚀 STARTING LLM TRADING STRATEGY")
+        """Główna pętla strategii LLM - NAPRAWIONA"""
+        self.logger.info("🚀 STARTING LLM TRADING STRATEGY (FIXED)")
         
-        self.logger.info("🔧 RUNNING API TESTS...")
-        api_ok = self.debug_api_connection()
-        
-        if not api_ok:
-            self.logger.error("❌ API TESTS FAILED - stopping bot")
-            self.is_running = False
-            return
-        
-        self.logger.info("✅ API TESTS PASSED - starting trading")
+        # Debuguj istniejące pozycje
+        self.debug_xrp_position()
         
         iteration = 0
         while self.is_running:
@@ -2072,27 +2065,34 @@ class LLMTradingBot:
                 iteration += 1
                 self.logger.info(f"\n🔄 LLM Trading Iteration #{iteration}")
                 
+                # 1. Aktualizuj P&L
                 self.update_positions_pnl()
                 
+                # 2. Sprawdź warunki wyjścia (NAPRAWIONE)
                 positions_to_close = self.check_exit_conditions()
                 for position_id, exit_reason, exit_price in positions_to_close:
+                    self.logger.info(f"🔔 CLOSING POSITION: {position_id} - {exit_reason}")
                     self.close_position(position_id, exit_reason, exit_price)
                 
-                active_symbols = [p['symbol'] for p in self.positions.values() 
-                                if p['status'] == 'ACTIVE']
-                active_count = len(active_symbols)
+                # 3. Otwieraj nowe pozycje tylko jeśli mamy miejsce
+                active_count = sum(1 for p in self.positions.values() if p['status'] == 'ACTIVE')
                 
                 if active_count < self.max_simultaneous_positions:
                     for symbol in self.assets:
-                        if symbol not in active_symbols:
+                        try:
                             position_id = self.open_llm_position(symbol)
                             if position_id:
-                                time.sleep(1)
+                                time.sleep(2)  # Daj czas między zleceniami
+                        except Exception as e:
+                            self.logger.error(f"❌ Error opening position for {symbol}: {e}")
+                            continue
                 
+                # 4. Loguj status
                 portfolio_value = self.dashboard_data['account_value']
                 self.logger.info(f"📊 Portfolio: ${portfolio_value:.2f} | Active Positions: {active_count}/{self.max_simultaneous_positions}")
                 
-                wait_time = random.randint(30, 90)
+                # 5. Czekaj przed następną iteracją
+                wait_time = random.randint(45, 120)
                 for i in range(wait_time):
                     if not self.is_running:
                         break
@@ -2100,6 +2100,8 @@ class LLMTradingBot:
                     
             except Exception as e:
                 self.logger.error(f"❌ Error in LLM trading loop: {e}")
+                import traceback
+                self.logger.error(f"❌ Stack trace: {traceback.format_exc()}")
                 time.sleep(30)
 
     def start_trading(self):
