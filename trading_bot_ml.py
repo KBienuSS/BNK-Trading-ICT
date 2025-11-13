@@ -55,12 +55,6 @@ class LLMTradingBot:
             self.real_trading = True
             self.logger.info("🔑 Klucze API Bybit załadowane - REAL TRADING ENABLED")
             
-        if self.real_trading:
-            try:
-                self.sync_all_positions_with_bybit()
-                self.logger.info("✅ Automatic position sync completed on startup")
-            except Exception as e:
-                self.logger.error(f"❌ Startup sync failed: {e}")
         # Kapitał wirtualny (fallback)
         self.initial_capital = initial_capital
         self.virtual_capital = initial_capital
@@ -197,6 +191,13 @@ class LLMTradingBot:
             except Exception as e:
                 self.logger.error(f"❌ Błąd inicjalizacji sesji pybit: {e}")
                 self.session = None
+
+        if self.real_trading:
+            try:
+                self.sync_all_positions_with_bybit()
+                self.logger.info("✅ Automatic position sync completed on startup")
+            except Exception as e:
+                self.logger.error(f"❌ Startup sync failed: {e}")
         
         self.logger.info("🧠 LLM-STYLE TRADING BOT - Alpha Arena Inspired")
         self.logger.info(f"💰 Initial capital: ${initial_capital} | Leverage: {leverage}x")
