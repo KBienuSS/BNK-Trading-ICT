@@ -1603,92 +1603,51 @@ class LLMTradingBot:
         return position_id
 
     def update_positions_pnl(self):
-        """POPRAWIONE aktualizowanie P&L Z NOWYMI FUNKCJAMI"""
+        """POPRAWIONE aktualizowanie P&L dla aktywnych pozycji"""
         total_unrealized = 0
-        total_margin = 0
-        total_confidence = 0
-        confidence_count = 0
         
-        # Synchronizuj z Bybit jeśli używamy real trading
-        if self.real_trading:
-            self.sync_all_positions_with_bybit()  # Używamy poprawionej synchronizacji
-            
-            # Pobierz unrealized P&L bezpośrednio z Bybit
-            total_unrealized = self.get_bybit_unrealized_pnl()
-            self.dashboard_data['unrealized_pnl'] = total_unrealized
-            
-            # Aktualizuj P&L dla każdej pozycji lokalnie
-            for position in self.positions.values():
-                if position['status'] == 'ACTIVE' and position.get('real_trading', False):
-                    # Użyj P&L z Bybit lub oblicz lokalnie
-                    current_price = position.get('current_price') or self.get_current_price(position['symbol'])
-                    if current_price:
-                        if position['side'] == 'LONG':
-                            pnl_pct = (current_price - position['entry_price']) / position['entry_price']
-                            unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
-                        else:
-                            pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
-                            unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
-                        
-                        position['unrealized_pnl'] = unrealized_pnl
-                        position['current_price'] = current_price
-                        
-                        # NOWE: Aktualizuj trailing stop i sprawdź partial exits
-                        self.update_trailing_stop(position['symbol'], current_price)
-                        self.check_partial_exits(position['symbol'], current_price)
-                        
-                        total_margin += position.get('margin', 0)
-                        total_confidence += position.get('confidence', 0)
-                        confidence_count += 1
-        else:
-            # Dla trybu wirtualnego, oblicz normalnie
-            for position in self.positions.values():
-                if position['status'] != 'ACTIVE':
-                    continue
-                    
-                current_price = self.get_current_price(position['symbol'])
+        for position in self.positions.values():
+            if position['status'] != 'ACTIVE':
+                continue
+                
+            try:
+                symbol = position['symbol']
+                current_price = self.get_current_price(symbol)
                 if not current_price:
                     continue
                     
-                if position['side'] == 'LONG':
-                    pnl_pct = (current_price - position['entry_price']) / position['entry_price']
-                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
-                else:
-                    pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
-                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
-                
-                position['unrealized_pnl'] = unrealized_pnl
                 position['current_price'] = current_price
                 
-                # NOWE: Aktualizuj trailing stop i sprawdź partial exits
-                self.update_trailing_stop(position['symbol'], current_price)
-                self.check_partial_exits(position['symbol'], current_price)
+                # ✅ POPRAWIONE: Oblicz unrealized P&L BEZ dodatkowego leverage
+                if position['side'] == 'LONG':
+                    pnl_pct = (current_price - position['entry_price']) / position['entry_price']
+                else:
+                    pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
                 
+                position_value = position['quantity'] * position['entry_price']
+                unrealized_pnl = pnl_pct * position_value  # ✅ BEZ * position['leverage']
+                
+                position['unrealized_pnl'] = unrealized_pnl
                 total_unrealized += unrealized_pnl
-                total_margin += position.get('margin', 0)
-                total_confidence += position.get('confidence', 0)
-                confidence_count += 1
-            
-            self.dashboard_data['unrealized_pnl'] = total_unrealized
+                
+            except Exception as e:
+                self.logger.error(f"❌ Error updating P&L for {position['symbol']}: {e}")
+                continue
         
-        # Użyj rzeczywistego salda konta
-        real_balance = self.get_account_balance()
-        if real_balance is not None:
-            account_value = real_balance + total_unrealized
-            available_cash = real_balance
+        # Aktualizuj dashboard
+        if self.real_trading:
+            real_balance = self.get_account_balance()
+            if real_balance is not None:
+                self.dashboard_data['account_value'] = real_balance + total_unrealized
+                self.dashboard_data['available_cash'] = real_balance
+            else:
+                self.dashboard_data['account_value'] = self.virtual_capital + total_unrealized
+                self.dashboard_data['available_cash'] = self.virtual_balance
         else:
-            account_value = self.virtual_capital + total_unrealized
-            available_cash = self.virtual_balance
+            self.dashboard_data['account_value'] = self.virtual_capital + total_unrealized
+            self.dashboard_data['available_cash'] = self.virtual_balance
         
-        self.dashboard_data['account_value'] = account_value
-        self.dashboard_data['available_cash'] = available_cash
-        
-        if confidence_count > 0:
-            self.dashboard_data['average_confidence'] = total_confidence / confidence_count
-        
-        if self.virtual_capital > 0:
-            self.stats['portfolio_utilization'] = total_margin / self.virtual_capital
-        
+        self.dashboard_data['unrealized_pnl'] = total_unrealized
         self.dashboard_data['last_update'] = datetime.now()
 
     def debug_api_connection(self):
@@ -1847,16 +1806,48 @@ class LLMTradingBot:
         return False
 
     def close_position(self, position_id: str, exit_reason: str, exit_price: float):
-        """Zamyka pozycję - Z INFORMACJĄ O SL"""
+        """Zamyka pozycję - POPRAWIONE OBLICZENIA P&L"""
         position = self.positions[position_id]
         
-        if position['side'] == 'LONG':
-            pnl_pct = (exit_price - position['entry_price']) / position['entry_price']
+        # ✅ POPRAWIONE: Używamy bezpośrednio P&L z Bybit LUB obliczamy bez dodatkowego leverage
+        if position.get('real_trading', False):
+            # Dla real trading - używamy P&L z Bybit (już z leverage)
+            try:
+                response = self.session.get_positions(
+                    category="linear",
+                    symbol=position['symbol']
+                )
+                if response['retCode'] == 0 and response['result']['list']:
+                    bybit_pos = response['result']['list'][0]
+                    realized_pnl = float(bybit_pos.get('unrealisedPnl', 0))
+                    # P&L z Bybit jest JUŻ z leverage, więc nie mnożymy ponownie
+                else:
+                    # Fallback: oblicz bez dodatkowego leverage
+                    if position['side'] == 'LONG':
+                        pnl_pct = (exit_price - position['entry_price']) / position['entry_price']
+                    else:
+                        pnl_pct = (position['entry_price'] - exit_price) / position['entry_price']
+                    position_value = position['quantity'] * position['entry_price']
+                    realized_pnl = pnl_pct * position_value  # ✅ BEZ * leverage
+            except Exception as e:
+                self.logger.warning(f"⚠️ Could not get P&L from Bybit: {e}")
+                # Fallback calculation
+                if position['side'] == 'LONG':
+                    pnl_pct = (exit_price - position['entry_price']) / position['entry_price']
+                else:
+                    pnl_pct = (position['entry_price'] - exit_price) / position['entry_price']
+                position_value = position['quantity'] * position['entry_price']
+                realized_pnl = pnl_pct * position_value  # ✅ BEZ * leverage
         else:
-            pnl_pct = (position['entry_price'] - exit_price) / position['entry_price']
+            # Dla virtual trading - oblicz bez leverage
+            if position['side'] == 'LONG':
+                pnl_pct = (exit_price - position['entry_price']) / position['entry_price']
+            else:
+                pnl_pct = (position['entry_price'] - exit_price) / position['entry_price']
+            position_value = position['quantity'] * position['entry_price']
+            realized_pnl = pnl_pct * position_value  # ✅ BEZ * leverage
         
-        realized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
-        fee = abs(realized_pnl) * 0.001
+        fee = abs(realized_pnl) * 0.001  # 0.1% fee
         realized_pnl_after_fee = realized_pnl - fee
         
         if position.get('real_trading', False):
@@ -1876,7 +1867,7 @@ class LLMTradingBot:
             'entry_price': position['entry_price'],
             'exit_price': exit_price,
             'quantity': position['quantity'],
-            'realized_pnl': realized_pnl_after_fee,
+            'realized_pnl': realized_pnl_after_fee,  # ✅ Poprawny P&L
             'exit_reason': exit_reason,
             'llm_profile': position['llm_profile'],
             'confidence': position['confidence'],
@@ -1884,25 +1875,27 @@ class LLMTradingBot:
             'exit_time': datetime.now(),
             'holding_hours': (datetime.now() - position['entry_time']).total_seconds() / 3600,
             'real_trading': position.get('real_trading', False),
-            'partial_exits_taken': len(position.get('partial_exits_taken', [])),  # DODANE: liczba partial exits
-            'sl_calculation_method': position.get('sl_calculation_method', 'Fixed')  # DODANE: metoda SL
+            'partial_exits_taken': len(position.get('partial_exits_taken', [])),
+            'sl_calculation_method': position.get('sl_calculation_method', 'Fixed')
         }
         
         self.trade_history.append(trade_record)
         
-        # ✅ POPRAWIONE: Aktualizacja statystyk przy ZAMYKANIU pozycji
-        # NIE inkrementujemy total_trades tutaj (już zrobione przy otwarciu)
+        # ✅ POPRAWIONE: Aktualizacja statystyk
         self.stats['total_pnl'] += realized_pnl_after_fee
         
         if realized_pnl_after_fee > 0:
             self.stats['winning_trades'] += 1
-            # ✅ DODANE: Aktualizacja wygranych long/short trades
             if position['side'] == "LONG":
                 self.stats['won_long_trades'] += 1
             else:
                 self.stats['won_short_trades'] += 1
         else:
             self.stats['losing_trades'] += 1
+        
+        # Oblicz margin return POPRAWNIE
+        margin = position.get('margin', position_value / position['leverage'])
+        margin_return = (realized_pnl_after_fee / margin) * 100 if margin > 0 else 0
         
         total_holding = sum((t['exit_time'] - t['entry_time']).total_seconds() 
                           for t in self.trade_history) / 3600
@@ -1913,17 +1906,19 @@ class LLMTradingBot:
         # ✅ POPRAWIONE: Aktualizacja net realized P&L
         self.dashboard_data['net_realized'] = self.stats['total_pnl']
         
-        margin_return = pnl_pct * self.leverage * 100
         pnl_color = "🟢" if realized_pnl_after_fee > 0 else "🔴"
         trading_mode = "REAL" if position.get('real_trading', False) else "VIRTUAL"
         sl_method = position.get('sl_calculation_method', 'Fixed')
         
-        # ✅ DODANE: Logowanie statystyk z uwzględnieniem metody SL
         partial_exits_count = len(position.get('partial_exits_taken', []))
         win_rate = (self.stats['winning_trades'] / self.stats['total_trades'] * 100) if self.stats['total_trades'] > 0 else 0
+        
+        # ✅ POPRAWIONE: Logowanie z poprawnym P&L
         self.logger.info(f"{pnl_color} {trading_mode} CLOSE: {position['symbol']} {position['side']} - P&L: ${realized_pnl_after_fee:+.2f} ({margin_return:+.1f}% margin) - Reason: {exit_reason} ({sl_method} SL)")
+        
         if partial_exits_count > 0:
             self.logger.info(f"   📈 Partial exits taken: {partial_exits_count}")
+        
         self.logger.info(f"   📊 STATS UPDATE: Total Trades: {self.stats['total_trades']}, Win Rate: {win_rate:.1f}%, Net P&L: ${self.stats['total_pnl']:.2f}")
 
     def get_portfolio_diversity(self) -> float:
@@ -1998,7 +1993,7 @@ class LLMTradingBot:
         return status
 
     def get_dashboard_data(self):
-        """POPRAWIONE przygotowywanie danych dla dashboardu Z INFORMACJĄ O METODZIE SL"""
+        """POPRAWIONE przygotowywanie danych dla dashboardu Z PRAWIDŁOWYMI OBLICZENIAMI P&L"""
         self.logger.info("🔄 Generating dashboard data...")
         
         api_status = self.check_api_status()
@@ -2007,11 +2002,25 @@ class LLMTradingBot:
         if self.real_trading:
             self.sync_all_positions_with_bybit()
         
-        # Pobierz unrealized P&L
-        total_unrealized_pnl = self.get_bybit_unrealized_pnl()
+        # Pobierz unrealized P&L z poprawionymi obliczeniami
+        total_unrealized_pnl = 0
+        for position in self.positions.values():
+            if position['status'] == 'ACTIVE':
+                current_price = position.get('current_price') or self.get_current_price(position['symbol'])
+                if current_price:
+                    # ✅ POPRAWIONE OBLICZENIA P&L - BEZ DODATKOWEGO MNOŻENIA PRZEZ LEVERAGE
+                    if position['side'] == 'LONG':
+                        pnl_pct = (current_price - position['entry_price']) / position['entry_price']
+                    else:
+                        pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
+                    
+                    position_value = position['quantity'] * position['entry_price']
+                    unrealized_pnl = pnl_pct * position_value  # ✅ BEZ * position['leverage']
+                    total_unrealized_pnl += unrealized_pnl
+        
         self.dashboard_data['unrealized_pnl'] = total_unrealized_pnl
         
-        # Przygotuj aktywne pozycje
+        # Przygotuj aktywne pozycje z POPRAWIONYM P&L
         active_positions = []
         for position_id, position in self.positions.items():
             if position['status'] == 'ACTIVE':
@@ -2019,7 +2028,18 @@ class LLMTradingBot:
                 if not current_price:
                     continue
                 
-                unrealized_pnl = position.get('unrealized_pnl', 0)
+                # ✅ POPRAWIONE: Oblicz unrealized P&L BEZ dodatkowego leverage
+                if position['side'] == 'LONG':
+                    pnl_pct = (current_price - position['entry_price']) / position['entry_price']
+                else:
+                    pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
+                
+                position_value = position['quantity'] * position['entry_price']
+                unrealized_pnl = pnl_pct * position_value  # ✅ BEZ * position['leverage']
+                
+                # Oblicz margin i zwrot POPRAWNIE
+                margin = position.get('margin', position_value / position['leverage'])
+                margin_return_pct = (unrealized_pnl / margin) * 100 if margin > 0 else 0
                 
                 exit_plan = position.get('exit_plan', self.calculate_llm_exit_plan(
                     position['entry_price'], 
@@ -2042,19 +2062,21 @@ class LLMTradingBot:
                     'current_price': current_price,
                     'quantity': position['quantity'],
                     'leverage': position['leverage'],
-                    'margin': position.get('margin', 0),
-                    'unrealized_pnl': unrealized_pnl,
+                    'margin': margin,
+                    'unrealized_pnl': unrealized_pnl,  # ✅ Poprawny P&L
+                    'unrealized_pnl_percent': round(pnl_pct * 100, 2),  # ✅ Poprawny procent
+                    'margin_return_pct': round(margin_return_pct, 1),   # ✅ Poprawny zwrot na marginesie
                     'llm_profile': position.get('llm_profile', self.active_profile),
                     'entry_time': position['entry_time'].strftime('%H:%M:%S'),
                     'exit_plan': exit_plan,
                     'tp_distance_pct': round(tp_distance_pct, 2),
                     'sl_distance_pct': round(sl_distance_pct, 2),
                     'real_trading': position.get('real_trading', False),
-                    'partial_exits_taken': len(position.get('partial_exits_taken', [])),  # DODANE: partial exits
-                    'use_trailing_stop': exit_plan.get('use_trailing_stop', False),  # DODANE: trailing stop info
+                    'partial_exits_taken': len(position.get('partial_exits_taken', [])),
+                    'use_trailing_stop': exit_plan.get('use_trailing_stop', False),
                     'bybit_sl_set': position.get('bybit_sl_set', False),
                     'sl_type': 'BYBIT' if position.get('bybit_sl_set') else 'VIRTUAL',
-                    'sl_calculation': position.get('sl_calculation_method', 'Fixed')  # ✅ DODAJ METODĘ OBLICZANIA
+                    'sl_calculation': position.get('sl_calculation_method', 'Fixed')
                 })
         
         self.logger.info(f"📊 DASHBOARD: {len(active_positions)} active positions to display")
@@ -2075,14 +2097,15 @@ class LLMTradingBot:
                 'entry_price': trade['entry_price'],
                 'exit_price': trade['exit_price'],
                 'quantity': trade['quantity'],
-                'realized_pnl': trade['realized_pnl'],
+                'realized_pnl': trade['realized_pnl'],  # ✅ Już poprawione w close_position()
+                'realized_pnl_percent': round(((trade['exit_price'] - trade['entry_price']) / trade['entry_price'] * 100) if trade['side'] == 'LONG' else ((trade['entry_price'] - trade['exit_price']) / trade['entry_price'] * 100), 2),
                 'exit_reason': trade['exit_reason'],
                 'llm_profile': trade['llm_profile'],
                 'holding_hours': round(trade['holding_hours'], 2),
                 'exit_time': trade['exit_time'].strftime('%H:%M:%S'),
                 'real_trading': trade.get('real_trading', False),
-                'partial_exits': trade.get('partial_exits_taken', 0),  # DODANE: partial exits
-                'sl_calculation_method': trade.get('sl_calculation_method', 'Fixed')  # DODANE: metoda SL
+                'partial_exits': trade.get('partial_exits_taken', 0),
+                'sl_calculation_method': trade.get('sl_calculation_method', 'Fixed')
             })
         
         total_trades = self.stats['total_trades']
