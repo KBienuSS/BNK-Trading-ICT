@@ -120,6 +120,28 @@ def debug_positions():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/open-position', methods=['POST'])
+def open_position():
+    """Ręczne otwieranie pozycji"""
+    try:
+        data = request.get_json()
+        symbol = data.get('symbol')
+        side = data.get('side')
+        quantity = float(data.get('quantity', 0))
+        
+        if not symbol or not side or quantity <= 0:
+            return jsonify({'error': 'Symbol, side and valid quantity are required'}), 400
+            
+        position_id = trading_bot.open_real_position(symbol, side, quantity)
+        
+        if position_id:
+            return jsonify({'status': 'Position opened successfully', 'position_id': position_id})
+        else:
+            return jsonify({'error': 'Failed to open position'}), 500
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+        
 @app.route('/api/start-bot', methods=['POST'])
 def start_bot():
     """Uruchamia bota"""
