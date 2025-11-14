@@ -1792,12 +1792,11 @@ class LLMTradingBot:
         return False
 
     def close_position(self, position_id: str, exit_reason: str, exit_price: float):
-        """Zamyka pozycję - POPRAWIONE OBLICZENIA P&L"""
+        """Zamyka pozycję - POPRAWIONE Z ZABEZPIECZENIAMI"""
         position = self.positions[position_id]
         
-        # ✅ POPRAWIONE: Używamy bezpośrednio P&L z Bybit LUB obliczamy bez dodatkowego leverage
+        # ✅ SPRAWDŹ CZY POZYCJA NA BYBIT JUŻ NIE ISTNIEJE
         if position.get('real_trading', False):
-            # Dla real trading - używamy P&L z Bybit (już z leverage)
             try:
                 response = self.session.get_positions(
                     category="linear",
@@ -1805,67 +1804,58 @@ class LLMTradingBot:
                 )
                 if response['retCode'] == 0 and response['result']['list']:
                     bybit_pos = response['result']['list'][0]
-                    realized_pnl = float(bybit_pos.get('unrealisedPnl', 0))
-                    # P&L z Bybit jest JUŻ z leverage, więc nie mnożymy ponownie
-                else:
-                    # Fallback: oblicz bez dodatkowego leverage
-                    if position['side'] == 'LONG':
-                        pnl_pct = (exit_price - position['entry_price']) / position['entry_price']
-                    else:
-                        pnl_pct = (position['entry_price'] - exit_price) / position['entry_price']
-                    position_value = position['quantity'] * position['entry_price']
-                    realized_pnl = pnl_pct * position_value  # ✅ BEZ * leverage
+                    size = float(bybit_pos.get('size', 0))
+                    
+                    if size == 0:
+                        # ✅ POZYCJA JUŻ ZAMKNIĘTA NA BYBIT - TYLKO LOKALNE ZAMKNIĘCIE
+                        self.logger.info(f"🔄 Position already closed on Bybit: {position['symbol']}")
+                        position['status'] = 'CLOSED'
+                        
+                        # Oblicz P&L z danych lokalnych
+                        if position['side'] == 'LONG':
+                            pnl_pct = (exit_price - position['entry_price']) / position['entry_price']
+                        else:
+                            pnl_pct = (position['entry_price'] - exit_price) / position['entry_price']
+                        
+                        position_value = position['quantity'] * position['entry_price']
+                        realized_pnl = pnl_pct * position_value
+                        fee = abs(realized_pnl) * 0.001
+                        realized_pnl_after_fee = realized_pnl - fee
+                        
+                        # Zapisz trade
+                        trade_record = {
+                            'position_id': position_id,
+                            'symbol': position['symbol'],
+                            'side': position['side'],
+                            'entry_price': position['entry_price'],
+                            'exit_price': exit_price,
+                            'quantity': position['quantity'],
+                            'realized_pnl': realized_pnl_after_fee,
+                            'exit_reason': f"{exit_reason}_AUTO_CLOSED",
+                            'llm_profile': position['llm_profile'],
+                            'confidence': position['confidence'],
+                            'entry_time': position['entry_time'],
+                            'exit_time': datetime.now(),
+                            'holding_hours': (datetime.now() - position['entry_time']).total_seconds() / 3600,
+                            'real_trading': True,
+                            'partial_exits_taken': len(position.get('partial_exits_taken', [])),
+                            'sl_calculation_method': position.get('sl_calculation_method', 'Fixed')
+                        }
+                        
+                        self.trade_history.append(trade_record)
+                        self.stats['total_trades'] += 1
+                        self.stats['total_pnl'] += realized_pnl_after_fee
+                        
+                        if realized_pnl_after_fee > 0:
+                            self.stats['winning_trades'] += 1
+                        else:
+                            self.stats['losing_trades'] += 1
+                        
+                        self.logger.info(f"🔄 LOCAL CLOSE ONLY: {position['symbol']} {position['side']} - Already closed on Bybit")
+                        return
+                        
             except Exception as e:
-                self.logger.warning(f"⚠️ Could not get P&L from Bybit: {e}")
-                # Fallback calculation
-                if position['side'] == 'LONG':
-                    pnl_pct = (exit_price - position['entry_price']) / position['entry_price']
-                else:
-                    pnl_pct = (position['entry_price'] - exit_price) / position['entry_price']
-                position_value = position['quantity'] * position['entry_price']
-                realized_pnl = pnl_pct * position_value  # ✅ BEZ * leverage
-        else:
-            # Dla virtual trading - oblicz bez leverage
-            if position['side'] == 'LONG':
-                pnl_pct = (exit_price - position['entry_price']) / position['entry_price']
-            else:
-                pnl_pct = (position['entry_price'] - exit_price) / position['entry_price']
-            position_value = position['quantity'] * position['entry_price']
-            realized_pnl = pnl_pct * position_value  # ✅ BEZ * leverage
-        
-        fee = abs(realized_pnl) * 0.001  # 0.1% fee
-        realized_pnl_after_fee = realized_pnl - fee
-        
-        if position.get('real_trading', False):
-            success = self.close_bybit_position(position['symbol'], position['side'], position['quantity'])
-            if not success:
-                self.logger.error(f"❌ Failed to close position on Bybit: {position_id}")
-                return
-        
-        if not self.real_trading:
-            self.virtual_balance += position['margin'] + realized_pnl_after_fee
-            self.virtual_capital += realized_pnl_after_fee
-        
-        trade_record = {
-            'position_id': position_id,
-            'symbol': position['symbol'],
-            'side': position['side'],
-            'entry_price': position['entry_price'],
-            'exit_price': exit_price,
-            'quantity': position['quantity'],
-            'realized_pnl': realized_pnl_after_fee,  # ✅ Poprawny P&L
-            'exit_reason': exit_reason,
-            'llm_profile': position['llm_profile'],
-            'confidence': position['confidence'],
-            'entry_time': position['entry_time'],
-            'exit_time': datetime.now(),
-            'holding_hours': (datetime.now() - position['entry_time']).total_seconds() / 3600,
-            'real_trading': position.get('real_trading', False),
-            'partial_exits_taken': len(position.get('partial_exits_taken', [])),
-            'sl_calculation_method': position.get('sl_calculation_method', 'Fixed')
-        }
-        
-        self.trade_history.append(trade_record)
+                self.logger.warning(f"⚠️ Could not check Bybit position status: {e}")
         
         # ✅ POPRAWIONE: Aktualizacja statystyk
         self.stats['total_pnl'] += realized_pnl_after_fee
