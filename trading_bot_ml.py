@@ -1792,7 +1792,7 @@ class LLMTradingBot:
         return False
 
     def close_position(self, position_id: str, exit_reason: str, exit_price: float):
-        """Zamyka pozycję - POPRAWIONE Z ZABEZPIECZENIAMI"""
+        """Zamyka pozycję - POPRAWIONE Z PRAWIDŁOWYM DODAWANIEM P&L DO NET REALIZED"""
         position = self.positions[position_id]
         
         # ✅ SPRAWDŹ CZY POZYCJA NA BYBIT JUŻ NIE ISTNIEJE
@@ -1821,6 +1821,9 @@ class LLMTradingBot:
                         realized_pnl = pnl_pct * position_value
                         fee = abs(realized_pnl) * 0.001
                         realized_pnl_after_fee = realized_pnl - fee
+                        
+                        # ✅ DODAJ P&L DO NET REALIZED
+                        self.dashboard_data['net_realized'] += realized_pnl_after_fee
                         
                         # Zapisz trade
                         trade_record = {
@@ -1856,46 +1859,110 @@ class LLMTradingBot:
                         
             except Exception as e:
                 self.logger.warning(f"⚠️ Could not check Bybit position status: {e}")
-        
-        # ✅ POPRAWIONE: Aktualizacja statystyk
-        self.stats['total_pnl'] += realized_pnl_after_fee
-        
-        if realized_pnl_after_fee > 0:
-            self.stats['winning_trades'] += 1
-            if position['side'] == "LONG":
-                self.stats['won_long_trades'] += 1
+    
+        # ✅ NORMALNE ZAMYKANIE POZYCJI
+        try:
+            # Oblicz P&L
+            if position['side'] == 'LONG':
+                pnl_pct = (exit_price - position['entry_price']) / position['entry_price']
             else:
-                self.stats['won_short_trades'] += 1
-        else:
-            self.stats['losing_trades'] += 1
-        
-        # Oblicz margin return POPRAWNIE
-        margin = position.get('margin', position_value / position['leverage'])
-        margin_return = (realized_pnl_after_fee / margin) * 100 if margin > 0 else 0
-        
-        total_holding = sum((t['exit_time'] - t['entry_time']).total_seconds() 
-                          for t in self.trade_history) / 3600
-        self.stats['avg_holding_time'] = total_holding / len(self.trade_history) if self.trade_history else 0
-        
-        position['status'] = 'CLOSED'
-        
-        # ✅ POPRAWIONE: Aktualizacja net realized P&L
-        self.dashboard_data['net_realized'] = self.stats['total_pnl']
-        
-        pnl_color = "🟢" if realized_pnl_after_fee > 0 else "🔴"
-        trading_mode = "REAL" if position.get('real_trading', False) else "VIRTUAL"
-        sl_method = position.get('sl_calculation_method', 'Fixed')
-        
-        partial_exits_count = len(position.get('partial_exits_taken', []))
-        win_rate = (self.stats['winning_trades'] / self.stats['total_trades'] * 100) if self.stats['total_trades'] > 0 else 0
-        
-        # ✅ POPRAWIONE: Logowanie z poprawnym P&L
-        self.logger.info(f"{pnl_color} {trading_mode} CLOSE: {position['symbol']} {position['side']} - P&L: ${realized_pnl_after_fee:+.2f} ({margin_return:+.1f}% margin) - Reason: {exit_reason} ({sl_method} SL)")
-        
-        if partial_exits_count > 0:
-            self.logger.info(f"   📈 Partial exits taken: {partial_exits_count}")
-        
-        self.logger.info(f"   📊 STATS UPDATE: Total Trades: {self.stats['total_trades']}, Win Rate: {win_rate:.1f}%, Net P&L: ${self.stats['total_pnl']:.2f}")
+                pnl_pct = (position['entry_price'] - exit_price) / position['entry_price']
+            
+            position_value = position['quantity'] * position['entry_price']
+            realized_pnl = pnl_pct * position_value
+            fee = abs(realized_pnl) * 0.001
+            realized_pnl_after_fee = realized_pnl - fee
+            
+            # ✅ DODAJ P&L DO NET REALIZED - TO JEST KLUCZOWE!
+            self.dashboard_data['net_realized'] += realized_pnl_after_fee
+            
+            # Aktualizuj statystyki
+            self.stats['total_pnl'] += realized_pnl_after_fee
+            self.stats['total_fees'] += fee
+            
+            if realized_pnl_after_fee > 0:
+                self.stats['winning_trades'] += 1
+                if position['side'] == "LONG":
+                    self.stats['won_long_trades'] += 1
+                else:
+                    self.stats['won_short_trades'] += 1
+            else:
+                self.stats['losing_trades'] += 1
+            
+            # Zwróć margin do balansu
+            margin = position.get('margin', position_value / position['leverage'])
+            
+            if not position.get('real_trading', False):
+                # Virtual trading - zwróć margin i P&L
+                self.virtual_balance += margin + realized_pnl_after_fee
+                self.virtual_capital += realized_pnl_after_fee
+            
+            # Oblicz holding time
+            holding_time = (datetime.now() - position['entry_time']).total_seconds() / 3600
+            
+            # Zapisz historię transakcji
+            trade_record = {
+                'position_id': position_id,
+                'symbol': position['symbol'],
+                'side': position['side'],
+                'entry_price': position['entry_price'],
+                'exit_price': exit_price,
+                'quantity': position['quantity'],
+                'realized_pnl': realized_pnl_after_fee,
+                'exit_reason': exit_reason,
+                'llm_profile': position['llm_profile'],
+                'confidence': position['confidence'],
+                'entry_time': position['entry_time'],
+                'exit_time': datetime.now(),
+                'holding_hours': holding_time,
+                'real_trading': position.get('real_trading', False),
+                'partial_exits_taken': len(position.get('partial_exits_taken', [])),
+                'sl_calculation_method': position.get('sl_calculation_method', 'Fixed')
+            }
+            
+            self.trade_history.append(trade_record)
+            
+            # Aktualizuj średni czas trzymania
+            total_holding = sum((t['exit_time'] - t['entry_time']).total_seconds() 
+                              for t in self.trade_history) / 3600
+            self.stats['avg_holding_time'] = total_holding / len(self.trade_history) if self.trade_history else 0
+            
+            # Zamknij pozycję
+            position['status'] = 'CLOSED'
+            position['exit_price'] = exit_price
+            position['exit_time'] = datetime.now()
+            position['realized_pnl'] = realized_pnl_after_fee
+            
+            # Aktualizuj portfolio utilization
+            active_margin = sum(p.get('margin', 0) for p in self.positions.values() if p['status'] == 'ACTIVE')
+            total_balance = self.get_account_balance() if self.real_trading else self.virtual_balance
+            if total_balance > 0:
+                self.stats['portfolio_utilization'] = active_margin / total_balance
+            
+            # Logowanie
+            margin_return = (realized_pnl_after_fee / margin) * 100 if margin > 0 else 0
+            pnl_color = "🟢" if realized_pnl_after_fee > 0 else "🔴"
+            trading_mode = "REAL" if position.get('real_trading', False) else "VIRTUAL"
+            sl_method = position.get('sl_calculation_method', 'Fixed')
+            
+            partial_exits_count = len(position.get('partial_exits_taken', []))
+            
+            self.logger.info(f"{pnl_color} {trading_mode} CLOSE: {position['symbol']} {position['side']}")
+            self.logger.info(f"   💰 P&L: ${realized_pnl_after_fee:+.2f} ({margin_return:+.1f}% margin)")
+            self.logger.info(f"   🎯 Reason: {exit_reason} ({sl_method} SL)")
+            self.logger.info(f"   📊 Net Realized: ${self.dashboard_data['net_realized']:.2f}")
+            
+            if partial_exits_count > 0:
+                self.logger.info(f"   📈 Partial exits taken: {partial_exits_count}")
+            
+            # Aktualizuj statystyki wygranej
+            win_rate = (self.stats['winning_trades'] / self.stats['total_trades'] * 100) if self.stats['total_trades'] > 0 else 0
+            self.logger.info(f"   📈 STATS: Trades: {self.stats['total_trades']}, Win Rate: {win_rate:.1f}%, Total P&L: ${self.stats['total_pnl']:.2f}")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error closing position {position_id}: {e}")
+            import traceback
+            self.logger.error(f"❌ Stack trace: {traceback.format_exc()}")
 
     def get_portfolio_diversity(self) -> float:
         """Oblicza dywersyfikację portfela"""
