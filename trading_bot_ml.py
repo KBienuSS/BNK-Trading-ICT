@@ -191,13 +191,6 @@ class LLMTradingBot:
             except Exception as e:
                 self.logger.error(f"❌ Błąd inicjalizacji sesji pybit: {e}")
                 self.session = None
-
-        if self.real_trading:
-            try:
-                self.sync_all_positions_with_bybit()
-                self.logger.info("✅ Automatic position sync completed on startup")
-            except Exception as e:
-                self.logger.error(f"❌ Startup sync failed: {e}")
         
         self.logger.info("🧠 LLM-STYLE TRADING BOT - Alpha Arena Inspired")
         self.logger.info(f"💰 Initial capital: ${initial_capital} | Leverage: {leverage}x")
@@ -1985,15 +1978,68 @@ class LLMTradingBot:
         
         return status
 
+    def open_real_position(self, symbol: str, side: str, quantity: float):
+        """Ręczne otwieranie pozycji na Bybit - tylko gdy użytkownik chce"""
+        if not self.real_trading or not self.session:
+            self.logger.error("❌ Real trading not enabled or no session")
+            return None
+            
+        try:
+            # Ustaw dźwignię
+            self.set_leverage(symbol, self.leverage)
+            
+            # Składanie zlecenia na Bybit
+            response = self.session.place_order(
+                category="linear",
+                symbol=symbol,
+                side="Buy" if side == "LONG" else "Sell",
+                orderType="Market",
+                qty=self.format_quantity(symbol, quantity),
+                timeInForce="GTC",
+            )
+            
+            if response['retCode'] == 0:
+                order_id = response['result']['orderId']
+                self.logger.info(f"✅ REAL ORDER SUCCESS: {symbol} {side} - ID: {order_id}")
+                
+                # Dodaj pozycję lokalnie
+                current_price = self.get_current_price(symbol)
+                position_id = f"real_{order_id}"
+                
+                self.positions[position_id] = {
+                    'symbol': symbol,
+                    'side': side,
+                    'entry_price': current_price,
+                    'quantity': quantity,
+                    'leverage': self.leverage,
+                    'margin': (quantity * current_price) / self.leverage,
+                    'entry_time': datetime.now(),  # ✅ PRAWIDŁOWY CZAS
+                    'status': 'ACTIVE',
+                    'order_id': order_id,
+                    'real_trading': True,
+                    'llm_profile': self.active_profile,
+                    'confidence': 0.5,
+                    'exit_plan': self.calculate_llm_exit_plan(current_price, 0.5, side),
+                    'current_price': current_price,
+                    'partial_exits_taken': [],
+                    'bybit_sl_set': False,
+                    'sl_calculation_method': 'ATR-based'
+                }
+                
+                return position_id
+            else:
+                self.logger.error(f"❌ REAL ORDER FAILED: {response.get('retMsg', 'Unknown error')}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error opening real position: {e}")
+            return None
+        
     def get_dashboard_data(self):
         """POPRAWIONE przygotowywanie danych dla dashboardu Z PRAWIDŁOWYMI OBLICZENIAMI P&L i CZASEM"""
         self.logger.info("🔄 Generating dashboard data...")
         
         api_status = self.check_api_status()
-        
-        # ZAWSZE synchronizuj z Bybit przed pobraniem danych
-        if self.real_trading:
-            self.sync_all_positions_with_bybit()
         
         # Pobierz unrealized P&L z poprawionymi obliczeniami
         total_unrealized_pnl = 0
@@ -2197,10 +2243,6 @@ class LLMTradingBot:
             try:
                 iteration += 1
                 self.logger.info(f"\n🔄 LLM Trading Iteration #{iteration}")
-
-                if iteration % 5 == 0:  # Co 5 iteracji
-                    self.logger.info("🔄 Auto-syncing positions with Bybit...")
-                    self.sync_all_positions_with_bybit()
                 
                 # 1. Aktualizuj P&L
                 self.update_positions_pnl()
