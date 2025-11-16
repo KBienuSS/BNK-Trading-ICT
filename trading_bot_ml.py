@@ -1,4 +1,4 @@
-# trading_bot_ml_binance_bybit_simple.py
+# trading_bot_ml_binance_bybit_real_balance.py
 import pandas as pd
 import numpy as np
 import requests
@@ -58,17 +58,15 @@ class LLMTradingBot:
             self.real_trading = True
             self.logger.info("🔑 Klucze API Bybit załadowane - REAL TRADING ENABLED")
             
-        # Kapitał wirtualny (fallback) - IDENTYCZNIE JAK W PIERWSZYM BOCIE
+        # Kapitał - TERAZ UŻYWAMY RZECZYWISTEGO SALDA Z BYBIT
         self.initial_capital = initial_capital
-        self.virtual_capital = initial_capital
-        self.virtual_balance = initial_capital
         self.leverage = leverage
         self.positions = {}
         self.trade_history = []
         self.is_running = False
         self.position_id = 0
         
-        # Cache cen - IDENTYCZNIE JAK W PIERWSZYM BOCIE
+        # Cache cen
         self.price_cache = {}
         self.price_history = {}
         
@@ -115,7 +113,7 @@ class LLMTradingBot:
         self.max_simultaneous_positions = 4
         self.assets = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'DOGEUSDT']
         
-        # STATYSTYKI - IDENTYCZNIE JAK W PIERWSZYM BOCIE
+        # STATYSTYKI
         self.stats = {
             'total_trades': 0,
             'winning_trades': 0,
@@ -128,7 +126,7 @@ class LLMTradingBot:
             'portfolio_utilization': 0
         }
         
-        # DASHBOARD - IDENTYCZNIE JAK W PIERWSZYM BOCIE
+        # DASHBOARD - TERAZ UŻYWAMY RZECZYWISTEGO SALDA
         self.dashboard_data = {
             'account_value': initial_capital,
             'available_cash': initial_capital,
@@ -168,7 +166,7 @@ class LLMTradingBot:
         self.logger.info(f"📈 Trading assets: {', '.join(self.assets)}")
         self.logger.info(f"🔗 Real Trading: {self.real_trading}")
         self.logger.info("📊 Using Binance API for price data & analysis")
-        self.logger.info("⚡ Using Bybit API for order execution")
+        self.logger.info("⚡ Using Bybit API for order execution & balance")
 
     def get_binance_price(self, symbol: str) -> Optional[float]:
         """Pobiera aktualną cenę z API Binance - IDENTYCZNIE JAK W PIERWSZYM BOCIE"""
@@ -182,13 +180,13 @@ class LLMTradingBot:
             data = response.json()
             price = float(data['price'])
             
-            # Zapisz w cache - IDENTYCZNIE JAK W PIERWSZYM BOCIE
+            # Zapisz w cache
             self.price_cache[symbol] = {
                 'price': price,
                 'timestamp': datetime.now()
             }
             
-            # Zapisz w historii dla analizy - IDENTYCZNIE JAK W PIERWSZYM BOCIE
+            # Zapisz w historii dla analizy
             if symbol not in self.price_history:
                 self.price_history[symbol] = []
             
@@ -197,7 +195,7 @@ class LLMTradingBot:
                 'timestamp': datetime.now()
             })
             
-            # Ogranicz historię do ostatnich 50 punktów - IDENTYCZNIE JAK W PIERWSZYM BOCIE
+            # Ogranicz historię do ostatnich 50 punktów
             if len(self.price_history[symbol]) > 50:
                 self.price_history[symbol] = self.price_history[symbol][-50:]
             
@@ -205,7 +203,6 @@ class LLMTradingBot:
             
         except requests.exceptions.RequestException as e:
             self.logger.error(f"❌ API Error getting price for {symbol}: {e}")
-            # Tylko cache jako fallback - IDENTYCZNIE JAK W PIERWSZYM BOCIE
             if symbol in self.price_cache:
                 cache_age = (datetime.now() - self.price_cache[symbol]['timestamp']).total_seconds()
                 if cache_age < 300:  # 5 minut
@@ -219,26 +216,22 @@ class LLMTradingBot:
             return None
 
     def get_current_price(self, symbol: str) -> Optional[float]:
-        """Pobiera aktualną cenę - WYŁĄCZNIE Z API BINANCE - IDENTYCZNIE JAK W PIERWSZYM BOCIE"""
+        """Pobiera aktualną cenę - WYŁĄCZNIE Z API BINANCE"""
         return self.get_binance_price(symbol)
 
     def analyze_simple_momentum(self, symbol: str) -> float:
         """Analiza momentum na podstawie rzeczywistych danych z API Binance - IDENTYCZNIE JAK W PIERWSZYM BOCIE"""
         try:
-            # Użyj historii cen do obliczenia momentum - IDENTYCZNIE JAK W PIERWSZYM BOCIE
             if symbol not in self.price_history or len(self.price_history[symbol]) < 2:
                 return random.uniform(-0.02, 0.02)
             
             history = self.price_history[symbol]
             current_price = history[-1]['price']
             
-            # Oblicz momentum na podstawie ostatnich punktów - IDENTYCZNIE JAK W PIERWSZYM BOCIE
             lookback = min(5, len(history) - 1)
             past_price = history[-lookback]['price']
             
             momentum = (current_price - past_price) / past_price
-            
-            # Normalizuj momentum - IDENTYCZNIE JAK W PIERWSZYM BOCIE
             momentum = max(min(momentum, 0.03), -0.03)
             
             return momentum
@@ -253,11 +246,9 @@ class LLMTradingBot:
             if symbol not in self.price_history or len(self.price_history[symbol]) < 10:
                 return random.random() < 0.6
             
-            # Oblicz zmienność na podstawie rzeczywistej historii cen - IDENTYCZNIE JAK W PIERWSZYM BOCIE
             prices = [entry['price'] for entry in self.price_history[symbol][-10:]]
             volatility = np.std(prices) / np.mean(prices)
             
-            # Wyższa zmienność = wyższa aktywność - IDENTYCZNIE JAK W PIERWSZYM BOCIE
             return volatility > 0.002
             
         except Exception as e:
@@ -268,33 +259,28 @@ class LLMTradingBot:
         """Generuje sygnał w stylu LLM na podstawie rzeczywistych danych z API Binance - IDENTYCZNIE JAK W PIERWSZYM BOCIE"""
         profile = self.get_current_profile()
         
-        # Podstawowe obserwacje na podstawie rzeczywistych cen - IDENTYCZNIE JAK W PIERWSZYM BOCIE
         momentum = self.analyze_simple_momentum(symbol)
         volume_active = self.check_volume_activity(symbol)
         
-        # Confidence bazowe z profilu - IDENTYCZNIE JAK W PIERWSZYM BOCIE
         base_confidence = profile['confidence_bias']
         
-        # Modyfikatory confidence na podstawie rzeczywistych danych - IDENTYCZNIE JAK W PIERWSZYM BOCIE
         confidence_modifiers = 0
         
-        if momentum > 0.008:  # Silny pozytywny momentum
+        if momentum > 0.008:
             confidence_modifiers += 0.2
-        elif momentum > 0.003:  # Umiarkowany pozytywny momentum
+        elif momentum > 0.003:
             confidence_modifiers += 0.1
-        elif momentum < -0.008:  # Silny negatywny momentum
+        elif momentum < -0.008:
             confidence_modifiers += 0.15
-        elif momentum < -0.003:  # Umiarkowany negatywny momentum
+        elif momentum < -0.003:
             confidence_modifiers += 0.08
             
         if volume_active:
             confidence_modifiers += 0.1
             
-        # Final confidence z losowością - IDENTYCZNIE JAK W PIERWSZYM BOCIE
         final_confidence = min(base_confidence + confidence_modifiers + random.uniform(-0.1, 0.1), 0.95)
         final_confidence = max(final_confidence, 0.1)
         
-        # Decyzja o kierunku na podstawie rzeczywistego momentum - IDENTYCZNIE JAK W PIERWSZYM BOCIE
         if momentum > 0.01 and volume_active:
             signal = "LONG"
         elif momentum < -0.01 and volume_active:
@@ -311,8 +297,34 @@ class LLMTradingBot:
         
         return signal, final_confidence
 
+    def get_account_balance(self) -> Optional[float]:
+        """Pobiera rzeczywiste saldo konta z Bybit używając pybit - TERAZ UŻYWANE DO WYLICZEŃ"""
+        if not self.real_trading:
+            return self.initial_capital  # Fallback dla trybu wirtualnego
+            
+        if not self.session:
+            self.logger.error("❌ Brak sesji pybit")
+            return None
+
+        try:
+            response = self.session.get_wallet_balance(
+                accountType="UNIFIED"
+            )
+            
+            if response['retCode'] == 0:
+                total_equity = float(response['result']['list'][0]['totalEquity'])
+                self.logger.info(f"💰 Rzeczywiste saldo konta z Bybit: ${total_equity:.2f}")
+                return total_equity
+            else:
+                self.logger.warning("⚠️ Nie udało się pobrać salda konta z Bybit")
+                return None
+                    
+        except Exception as e:
+            self.logger.error(f"❌ Error getting account balance from Bybit: {e}")
+            return None
+
     def calculate_position_size(self, symbol: str, price: float, confidence: float) -> Tuple[float, float, float]:
-        """Oblicza wielkość pozycji w stylu LLM - IDENTYCZNIE JAK W PIERWSZYM BOCIE"""
+        """Oblicza wielkość pozycji w stylu LLM - TERAZ NA PODSTAWIE RZECZYWISTEGO SALDA Z BYBIT"""
         profile = self.get_current_profile()
         
         base_allocation = {
@@ -330,11 +342,16 @@ class LLMTradingBot:
             'VERY_AGGRESSIVE': 1.5
         }.get(profile['position_sizing'], 1.0)
         
-        # Użyj wirtualnego kapitału - IDENTYCZNIE JAK W PIERWSZYM BOCIE
-        position_value = (self.virtual_capital * base_allocation * 
+        # TERAZ: Użyj rzeczywistego salda z Bybit do obliczeń
+        real_balance = self.get_account_balance()
+        if real_balance is None:
+            self.logger.warning("⚠️ Could not get real balance from Bybit, using initial capital")
+            real_balance = self.initial_capital
+        
+        position_value = (real_balance * base_allocation * 
                          confidence_multiplier * sizing_multiplier)
         
-        max_position_value = self.virtual_capital * 0.4
+        max_position_value = real_balance * 0.4
         position_value = min(position_value, max_position_value)
         
         quantity = position_value / price
@@ -541,7 +558,7 @@ class LLMTradingBot:
             return False
 
     def open_llm_position(self, symbol: str):
-        """Otwiera pozycję w stylu LLM - IDENTYCZNIE JAK W PIERWSZYM BOCIE + Bybit execution"""
+        """Otwiera pozycję w stylu LLM - TERAZ Z RZECZYWISTYM SALDEM Z BYBIT"""
         if not self.should_enter_trade():
             return None
             
@@ -562,9 +579,14 @@ class LLMTradingBot:
             symbol, current_price, confidence
         )
         
-        # Sprawdź dostępny balans - IDENTYCZNIE JAK W PIERWSZYM BOCIE (wirtualny)
-        if margin_required > self.virtual_balance:
-            self.logger.warning(f"💰 Insufficient balance for {symbol}")
+        # Sprawdź dostępny balans - TERAZ Z RZECZYWISTYM SALDEM Z BYBIT
+        available_balance = self.get_account_balance()
+        if available_balance is None:
+            self.logger.warning("⚠️ Could not get available balance - skipping trade")
+            return None
+            
+        if margin_required > available_balance:
+            self.logger.warning(f"💰 Insufficient balance for {symbol}. Available: ${available_balance:.2f}, Required: ${margin_required:.2f}")
             return None
             
         exit_plan = self.calculate_llm_exit_plan(current_price, confidence, signal)
@@ -581,7 +603,7 @@ class LLMTradingBot:
             if not order_id:
                 return None
         
-        # IDENTYCZNIE JAK W PIERWSZYM BOCIE - sposób zapisywania pozycji
+        # Sposób zapisywania pozycji - IDENTYCZNIE JAK W PIERWSZYM BOCIE
         position_id = f"llm_{self.position_id}"
         self.position_id += 1
         
@@ -604,7 +626,6 @@ class LLMTradingBot:
         }
         
         self.positions[position_id] = position
-        self.virtual_balance -= margin_required  # IDENTYCZNIE JAK W PIERWSZYM BOCIE
         
         if signal == "LONG":
             self.stats['long_trades'] += 1
@@ -615,15 +636,17 @@ class LLMTradingBot:
         sl_distance = (current_price - exit_plan['stop_loss']) / current_price * 100
         
         trading_mode = "REAL" if self.real_trading else "VIRTUAL"
+        available_balance_after = available_balance - margin_required
         self.logger.info(f"🎯 {trading_mode} OPEN: {symbol} {signal} @ ${current_price:.4f}")
         self.logger.info(f"   📊 Confidence: {confidence:.1%} | Size: ${position_value:.2f}")
+        self.logger.info(f"   💰 Balance: ${available_balance:.2f} -> ${available_balance_after:.2f}")
         self.logger.info(f"   🎯 TP: {exit_plan['take_profit']:.4f} ({tp_distance:+.2f}%)")
         self.logger.info(f"   🛑 SL: {exit_plan['stop_loss']:.4f} ({sl_distance:+.2f}%)")
         
         return position_id
 
     def update_positions_pnl(self):
-        """Aktualizuje P&L wszystkich pozycji używając rzeczywistych cen z API - IDENTYCZNIE JAK W PIERWSZYM BOCIE"""
+        """Aktualizuje P&L wszystkich pozycji używając rzeczywistych cen z API - TERAZ Z RZECZYWISTYM SALDEM"""
         total_unrealized = 0
         total_margin = 0
         total_confidence = 0
@@ -653,15 +676,23 @@ class LLMTradingBot:
             confidence_count += 1
         
         self.dashboard_data['unrealized_pnl'] = total_unrealized
-        # IDENTYCZNIE JAK W PIERWSZYM BOCIE - tylko wirtualny kapitał
-        self.dashboard_data['account_value'] = self.virtual_capital + total_unrealized
-        self.dashboard_data['available_cash'] = self.virtual_balance
+        
+        # TERAZ: Użyj rzeczywistego salda z Bybit do aktualizacji wartości konta
+        real_balance = self.get_account_balance()
+        if real_balance is not None:
+            self.dashboard_data['account_value'] = real_balance + total_unrealized
+            self.dashboard_data['available_cash'] = real_balance
+        else:
+            # Fallback
+            self.dashboard_data['account_value'] = self.initial_capital + total_unrealized
+            self.dashboard_data['available_cash'] = self.initial_capital
         
         if confidence_count > 0:
             self.dashboard_data['average_confidence'] = total_confidence / confidence_count
         
-        if self.virtual_capital > 0:
-            self.stats['portfolio_utilization'] = total_margin / self.virtual_capital
+        # Portfolio utilization na podstawie rzeczywistego salda
+        if real_balance and real_balance > 0:
+            self.stats['portfolio_utilization'] = total_margin / real_balance
         
         self.dashboard_data['last_update'] = datetime.now()
 
@@ -709,7 +740,7 @@ class LLMTradingBot:
         return positions_to_close
 
     def close_position(self, position_id: str, exit_reason: str, exit_price: float):
-        """Zamyka pozycję - IDENTYCZNIE JAK W PIERWSZYM BOCIE + Bybit execution"""
+        """Zamyka pozycję - TERAZ NIE AKTUALIZUJEMY WIRTUALNEGO BALANSU, TYLKO UŻYWAMY RZECZYWISTEGO Z BYBIT"""
         position = self.positions[position_id]
         
         if position['side'] == 'LONG':
@@ -726,11 +757,10 @@ class LLMTradingBot:
             success = self.close_bybit_position(position['symbol'], position['side'], position['quantity'])
             if not success:
                 self.logger.error(f"❌ Failed to close position on Bybit: {position_id}")
-    
-        # IDENTYCZNIE JAK W PIERWSZYM BOCIE - aktualizacja wirtualnego balansu
-        self.virtual_balance += position['margin'] + realized_pnl_after_fee
-        self.virtual_capital += realized_pnl_after_fee
         
+        # TERAZ: Nie aktualizujemy wirtualnego balansu, bo używamy rzeczywistego z Bybit
+        # Balans zostanie zaktualizowany przy następnym wywołaniu update_positions_pnl()
+    
         trade_record = {
             'position_id': position_id,
             'symbol': position['symbol'],
@@ -771,32 +801,6 @@ class LLMTradingBot:
         
         self.logger.info(f"{pnl_color} {trading_mode} CLOSE: {position['symbol']} {position['side']} - P&L: ${realized_pnl_after_fee:+.2f} ({margin_return:+.1f}% margin) - Reason: {exit_reason}")
 
-    def get_account_balance(self) -> Optional[float]:
-        """Pobiera rzeczywiste saldo konta z Bybit używając pybit"""
-        if not self.real_trading:
-            return self.virtual_balance
-            
-        if not self.session:
-            self.logger.error("❌ Brak sesji pybit")
-            return None
-
-        try:
-            response = self.session.get_wallet_balance(
-                accountType="UNIFIED"
-            )
-            
-            if response['retCode'] == 0:
-                total_equity = float(response['result']['list'][0]['totalEquity'])
-                self.logger.info(f"💰 Rzeczywiste saldo konta z Bybit: ${total_equity:.2f}")
-                return total_equity
-            else:
-                self.logger.warning("⚠️ Nie udało się pobrać salda konta z Bybit")
-                return None
-                    
-        except Exception as e:
-            self.logger.error(f"❌ Error getting account balance from Bybit: {e}")
-            return None
-
     def get_portfolio_diversity(self) -> float:
         """Oblicza dywersyfikację portfela - IDENTYCZNIE JAK W PIERWSZYM BOCIE"""
         try:
@@ -831,7 +835,7 @@ class LLMTradingBot:
         return False
 
     def get_dashboard_data(self):
-        """Przygotowuje dane dla dashboardu używając rzeczywistych cen z API - IDENTYCZNIE JAK W PIERWSZYM BOCIE"""
+        """Przygotowuje dane dla dashboardu używając rzeczywistych cen z API - TERAZ Z RZECZYWISTYM SALDEM"""
         active_positions = []
         total_unrealized_pnl = 0
         
@@ -848,7 +852,6 @@ class LLMTradingBot:
                     pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
                     unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
                 
-                # Oblicz odległości do TP/SL - IDENTYCZNIE JAK W PIERWSZYM BOCIE
                 if position['side'] == 'LONG':
                     tp_distance_pct = ((position['exit_plan']['take_profit'] - current_price) / current_price) * 100
                     sl_distance_pct = ((current_price - position['exit_plan']['stop_loss']) / current_price) * 100
@@ -877,7 +880,6 @@ class LLMTradingBot:
                 
                 total_unrealized_pnl += unrealized_pnl
         
-        # Oblicz confidence levels dla każdego assetu - IDENTYCZNIE JAK W PIERWSZYM BOCIE
         confidence_levels = {}
         for symbol in self.assets:
             try:
@@ -886,7 +888,6 @@ class LLMTradingBot:
             except:
                 confidence_levels[symbol] = 0
         
-        # Ostatnie transakcje - IDENTYCZNIE JAK W PIERWSZYM BOCIE
         recent_trades = []
         for trade in self.trade_history[-10:]:
             recent_trades.append({
@@ -903,10 +904,8 @@ class LLMTradingBot:
                 'real_trading': trade.get('real_trading', False)
             })
         
-        # Metryki wydajności - IDENTYCZNIE JAK W PIERWSZYM BOCIE
         total_trades = self.stats['total_trades']
         win_rate = (self.stats['winning_trades'] / total_trades * 100) if total_trades > 0 else 0
-        total_return_pct = ((self.dashboard_data['account_value'] - 10000) / 10000) * 100
         
         return {
             'account_summary': {
@@ -917,7 +916,7 @@ class LLMTradingBot:
                 'real_trading': self.real_trading
             },
             'performance_metrics': {
-                'total_return_pct': round(total_return_pct, 2),
+                'total_return_pct': round(((self.dashboard_data['account_value'] - self.initial_capital) / self.initial_capital) * 100, 2),
                 'win_rate': round(win_rate, 1),
                 'total_trades': total_trades,
                 'long_trades': self.stats['long_trades'],
@@ -955,11 +954,12 @@ class LLMTradingBot:
         return self.chart_data
 
     def run_llm_trading_strategy(self):
-        """Główna pętla strategii LLM używająca rzeczywistych cen z API - IDENTYCZNIE JAK W PIERWSZYM BOCIE"""
+        """Główna pętla strategii LLM używająca rzeczywistych cen z API - TERAZ Z RZECZYWISTYM SALDEM"""
         self.logger.info("🚀 STARTING LLM-STYLE TRADING STRATEGY")
         self.logger.info(f"🎯 Active Profile: {self.active_profile}")
         self.logger.info("📊 Data Source: Binance API")
         self.logger.info("⚡ Execution: Bybit API")
+        self.logger.info("💰 Using REAL Bybit balance for calculations")
         
         iteration = 0
         while self.is_running:
@@ -967,15 +967,15 @@ class LLMTradingBot:
                 iteration += 1
                 self.logger.info(f"\n🔄 LLM Trading Iteration #{iteration}")
                 
-                # 1. Aktualizuj P&L używając rzeczywistych cen - IDENTYCZNIE JAK W PIERWSZYM BOCIE
+                # 1. Aktualizuj P&L używając rzeczywistych cen
                 self.update_positions_pnl()
                 
-                # 2. Sprawdź warunki wyjścia - IDENTYCZNIE JAK W PIERWSZYM BOCIE
+                # 2. Sprawdź warunki wyjścia
                 positions_to_close = self.check_exit_conditions()
                 for position_id, exit_reason, exit_price in positions_to_close:
                     self.close_position(position_id, exit_reason, exit_price)
                 
-                # 3. Sprawdź możliwości wejścia - IDENTYCZNIE JAK W PIERWSZYM BOCIE
+                # 3. Sprawdź możliwości wejścia
                 active_symbols = [p['symbol'] for p in self.positions.values() 
                                 if p['status'] == 'ACTIVE']
                 active_count = len(active_symbols)
@@ -1107,6 +1107,7 @@ if __name__ == '__main__':
     print("🧠 LLM Profiles: Claude, Gemini, GPT, Qwen")
     print("📈 Trading assets: BTC, ETH, SOL, XRP, BNB, DOGE")
     print("📊 Using BINANCE API for price data & analysis")
-    print("⚡ Using BYBIT API for order execution")
+    print("⚡ Using BYBIT API for order execution & balance")
+    print("💰 Using REAL Bybit balance for position sizing")
     print("🔗 Real Trading: Enabled (with Bybit API)" if trading_bot.real_trading else "🔗 Real Trading: Disabled (Virtual Mode)")
     app.run(debug=True, host='0.0.0.0', port=5000)
