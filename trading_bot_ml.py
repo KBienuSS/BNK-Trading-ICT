@@ -78,7 +78,8 @@ class LLMTradingBot:
                 'short_frequency': 0.1,
                 'holding_bias': 'LONG',
                 'trade_frequency': 'LOW',
-                'position_sizing': 'CONSERVATIVE'
+                'position_sizing': 'CONSERVATIVE',
+                'max_holding_hours': (2, 8)  # 2-8 godzin
             },
             'Gemini': {
                 'risk_appetite': 'HIGH', 
@@ -86,7 +87,8 @@ class LLMTradingBot:
                 'short_frequency': 0.35,
                 'holding_bias': 'SHORT',
                 'trade_frequency': 'HIGH',
-                'position_sizing': 'AGGRESSIVE'
+                'position_sizing': 'AGGRESSIVE',
+                'max_holding_hours': (1, 4)  # 1-4 godziny
             },
             'GPT': {
                 'risk_appetite': 'LOW',
@@ -94,7 +96,8 @@ class LLMTradingBot:
                 'short_frequency': 0.4,
                 'holding_bias': 'NEUTRAL',
                 'trade_frequency': 'MEDIUM',
-                'position_sizing': 'CONSERVATIVE'
+                'position_sizing': 'CONSERVATIVE',
+                'max_holding_hours': (3, 12)  # 3-12 godzin
             },
             'Qwen': {
                 'risk_appetite': 'HIGH',
@@ -102,7 +105,8 @@ class LLMTradingBot:
                 'short_frequency': 0.2,
                 'holding_bias': 'LONG', 
                 'trade_frequency': 'MEDIUM',
-                'position_sizing': 'VERY_AGGRESSIVE'
+                'position_sizing': 'VERY_AGGRESSIVE',
+                'max_holding_hours': (1, 6)  # 1-6 godzin
             }
         }
         
@@ -122,6 +126,8 @@ class LLMTradingBot:
             'total_fees': 0,
             'long_trades': 0,
             'short_trades': 0,
+            'win_long_trades': 0,
+            'win_short_trades': 0,
             'avg_holding_time': 0,
             'portfolio_utilization': 0
         }
@@ -360,7 +366,7 @@ class LLMTradingBot:
         return quantity, position_value, margin_required
 
     def calculate_llm_exit_plan(self, entry_price: float, confidence: float, side: str) -> Dict:
-        """Oblicza plan wyjścia w stylu LLM - IDENTYCZNIE JAK W PIERWSZYM BOCIE"""
+        """Oblicza plan wyjścia w stylu LLM - TERAZ Z RÓŻNYM CZASEM TRZYMANIA DLA PROFILI"""
         profile = self.get_current_profile()
         
         if confidence > 0.7:
@@ -398,11 +404,15 @@ class LLMTradingBot:
             take_profit = entry_price - (entry_price - take_profit) * risk_multiplier
             stop_loss = entry_price + (stop_loss - entry_price) * risk_multiplier
         
+        # RÓŻNY CZAS TRZYMANIA DLA KAŻDEGO PROFILU
+        min_hours, max_hours = profile['max_holding_hours']
+        max_holding_hours = random.randint(min_hours, max_hours)
+        
         return {
             'take_profit': round(take_profit, 4),
             'stop_loss': round(stop_loss, 4),
             'invalidation': entry_price * 0.98 if side == "LONG" else entry_price * 1.02,
-            'max_holding_hours': random.randint(1, 6)
+            'max_holding_hours': max_holding_hours
         }
 
     def should_enter_trade(self) -> bool:
@@ -642,6 +652,7 @@ class LLMTradingBot:
         self.logger.info(f"   💰 Balance: ${available_balance:.2f} -> ${available_balance_after:.2f}")
         self.logger.info(f"   🎯 TP: {exit_plan['take_profit']:.4f} ({tp_distance:+.2f}%)")
         self.logger.info(f"   🛑 SL: {exit_plan['stop_loss']:.4f} ({sl_distance:+.2f}%)")
+        self.logger.info(f"   ⏰ Max holding time: {exit_plan['max_holding_hours']} hours")
         
         return position_id
 
@@ -662,10 +673,12 @@ class LLMTradingBot:
                 
             if position['side'] == 'LONG':
                 pnl_pct = (current_price - position['entry_price']) / position['entry_price']
-                unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+                # POPRAWKA: USUNIĘTO MNOŻENIE PRZEZ DŹWIGNIĘ - P&L powinien być liczony bez dźwigni
+                unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price']
             else:
                 pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
-                unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+                # POPRAWKA: USUNIĘTO MNOŻENIE PRZEZ DŹWIGNIĘ - P&L powinien być liczony bez dźwigni
+                unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price']
             
             position['unrealized_pnl'] = unrealized_pnl
             position['current_price'] = current_price
@@ -697,7 +710,7 @@ class LLMTradingBot:
         self.dashboard_data['last_update'] = datetime.now()
 
     def check_exit_conditions(self):
-        """Sprawdza warunki wyjścia z pozycji używając rzeczywistych cen z API - IDENTYCZNIE JAK W PIERWSZYM BOCIE"""
+        """Sprawdza warunki wyjścia z pozycji używając rzeczywistych cen z API - TERAZ Z RÓŻNYM CZASEM TRZYMANIA"""
         positions_to_close = []
         
         for position_id, position in self.positions.items():
@@ -748,7 +761,8 @@ class LLMTradingBot:
         else:
             pnl_pct = (position['entry_price'] - exit_price) / position['entry_price']
         
-        realized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+        # POPRAWKA: USUNIĘTO MNOŻENIE PRZEZ DŹWIGNIĘ - P&L powinien być liczony bez dźwigni
+        realized_pnl = pnl_pct * position['quantity'] * position['entry_price']
         fee = abs(realized_pnl) * 0.001
         realized_pnl_after_fee = realized_pnl - fee
         
@@ -783,8 +797,13 @@ class LLMTradingBot:
         self.stats['total_trades'] += 1
         self.stats['total_pnl'] += realized_pnl_after_fee
         
+        # POPRAWKA: DODANO ŚLEDZENIE WYGRAWANYCH LONG/SHORT TRADES
         if realized_pnl_after_fee > 0:
             self.stats['winning_trades'] += 1
+            if position['side'] == 'LONG':
+                self.stats['win_long_trades'] += 1
+            else:
+                self.stats['win_short_trades'] += 1
         else:
             self.stats['losing_trades'] += 1
         
@@ -795,11 +814,12 @@ class LLMTradingBot:
         position['status'] = 'CLOSED'
         self.dashboard_data['net_realized'] = self.stats['total_pnl']
         
-        margin_return = pnl_pct * self.leverage * 100
+        # POPRAWKA: USUNIĘTO MNOŻENIE PRZEZ DŹWIGNIĘ W WYŚWIETLANIU
+        margin_return = pnl_pct * 100  # Teraz pokazuje rzeczywisty % zysku/straty
         pnl_color = "🟢" if realized_pnl_after_fee > 0 else "🔴"
         trading_mode = "REAL" if position.get('real_trading', False) else "VIRTUAL"
         
-        self.logger.info(f"{pnl_color} {trading_mode} CLOSE: {position['symbol']} {position['side']} - P&L: ${realized_pnl_after_fee:+.2f} ({margin_return:+.1f}% margin) - Reason: {exit_reason}")
+        self.logger.info(f"{pnl_color} {trading_mode} CLOSE: {position['symbol']} {position['side']} - P&L: ${realized_pnl_after_fee:+.2f} ({margin_return:+.1f}%) - Reason: {exit_reason}")
 
     def get_portfolio_diversity(self) -> float:
         """Oblicza dywersyfikację portfela - IDENTYCZNIE JAK W PIERWSZYM BOCIE"""
@@ -822,15 +842,17 @@ class LLMTradingBot:
             return 0
 
     def get_current_profile(self):
-        """Zwraca aktywny profil LLM - IDENTYCZNIE JAK W PIERWSZYM BOCIE"""
+        """Zwraca aktywny profil LLM - TERAZ Z RÓŻNYM CZASEM TRZYMANIA"""
         return self.llm_profiles[self.active_profile]
 
     def set_active_profile(self, profile_name: str):
-        """Zmienia aktywny profil zachowania - IDENTYCZNIE JAK W PIERWSZYM BOCIE"""
+        """Zmienia aktywny profil zachowania - TERAZ Z RÓŻNYM CZASEM TRZYMANIA"""
         if profile_name in self.llm_profiles:
             self.active_profile = profile_name
             self.dashboard_data['active_profile'] = profile_name
-            self.logger.info(f"🔄 Changed LLM profile to: {profile_name}")
+            profile = self.llm_profiles[profile_name]
+            min_h, max_h = profile['max_holding_hours']
+            self.logger.info(f"🔄 Changed LLM profile to: {profile_name} (holding time: {min_h}-{max_h} hours)")
             return True
         return False
 
@@ -847,10 +869,12 @@ class LLMTradingBot:
                 
                 if position['side'] == 'LONG':
                     pnl_pct = (current_price - position['entry_price']) / position['entry_price']
-                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+                    # POPRAWKA: USUNIĘTO MNOŻENIE PRZEZ DŹWIGNIĘ
+                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price']
                 else:
                     pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
-                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+                    # POPRAWKA: USUNIĘTO MNOŻENIE PRZEZ DŹWIGNIĘ
+                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price']
                 
                 if position['side'] == 'LONG':
                     tp_distance_pct = ((position['exit_plan']['take_profit'] - current_price) / current_price) * 100
@@ -907,6 +931,10 @@ class LLMTradingBot:
         total_trades = self.stats['total_trades']
         win_rate = (self.stats['winning_trades'] / total_trades * 100) if total_trades > 0 else 0
         
+        # DODANE: Statystyki wygranych long/short
+        win_long_rate = (self.stats['win_long_trades'] / self.stats['long_trades'] * 100) if self.stats['long_trades'] > 0 else 0
+        win_short_rate = (self.stats['win_short_trades'] / self.stats['short_trades'] * 100) if self.stats['short_trades'] > 0 else 0
+        
         return {
             'account_summary': {
                 'total_value': round(self.dashboard_data['account_value'], 2),
@@ -918,9 +946,13 @@ class LLMTradingBot:
             'performance_metrics': {
                 'total_return_pct': round(((self.dashboard_data['account_value'] - self.initial_capital) / self.initial_capital) * 100, 2),
                 'win_rate': round(win_rate, 1),
+                'win_long_rate': round(win_long_rate, 1),
+                'win_short_rate': round(win_short_rate, 1),
                 'total_trades': total_trades,
                 'long_trades': self.stats['long_trades'],
                 'short_trades': self.stats['short_trades'],
+                'win_long_trades': self.stats['win_long_trades'],
+                'win_short_trades': self.stats['win_short_trades'],
                 'avg_holding_hours': round(self.stats['avg_holding_time'], 2),
                 'portfolio_utilization': round(self.stats['portfolio_utilization'] * 100, 1),
                 'portfolio_diversity': round(self.get_portfolio_diversity() * 100, 1),
@@ -931,7 +963,8 @@ class LLMTradingBot:
                 'available_profiles': list(self.llm_profiles.keys()),
                 'max_positions': self.max_simultaneous_positions,
                 'leverage': self.leverage,
-                'real_trading': self.real_trading
+                'real_trading': self.real_trading,
+                'holding_time_range': f"{self.llm_profiles[self.active_profile]['max_holding_hours'][0]}-{self.llm_profiles[self.active_profile]['max_holding_hours'][1]} hours"
             },
             'confidence_levels': confidence_levels,
             'active_positions': active_positions,
@@ -957,6 +990,9 @@ class LLMTradingBot:
         """Główna pętla strategii LLM używająca rzeczywistych cen z API - TERAZ Z RZECZYWISTYM SALDEM"""
         self.logger.info("🚀 STARTING LLM-STYLE TRADING STRATEGY")
         self.logger.info(f"🎯 Active Profile: {self.active_profile}")
+        profile = self.get_current_profile()
+        min_h, max_h = profile['max_holding_hours']
+        self.logger.info(f"⏰ Holding time range: {min_h}-{max_h} hours")
         self.logger.info("📊 Data Source: Binance API")
         self.logger.info("⚡ Execution: Bybit API")
         self.logger.info("💰 Using REAL Bybit balance for calculations")
