@@ -61,7 +61,7 @@ def get_trading_data():
 def get_bot_status():
     return jsonify({'status': bot_status})
 
-@app.route('/api/start-bot')
+@app.route('/api/start-bot', methods=['GET', 'POST'])
 def start_bot():
     global bot_status, llm_trading_bot  # Zmieniam na llm_trading_bot
     try:
@@ -80,7 +80,7 @@ def start_bot():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/stop-bot')
+@app.route('/api/stop-bot', methods=['GET', 'POST'])
 def stop_bot():
     global bot_status
     try:
@@ -109,7 +109,7 @@ def change_profile():
     except Exception as e:
         return jsonify({'status': f'Error changing profile: {str(e)}'})
 
-@app.route('/api/force-update')
+@app.route('/api/force-update', methods=['GET', 'POST'])
 def force_update():
     try:
         if llm_trading_bot:  # Zmieniam na llm_trading_bot
