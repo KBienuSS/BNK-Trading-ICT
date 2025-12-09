@@ -169,6 +169,111 @@ class LLMTradingBot:
         self.logger.info("📊 Using Binance API for price data & analysis")
         self.logger.info("⚡ Using Bybit API for order execution")
 
+    def open_real_position(self, symbol: str, side: str, quantity: float) -> Optional[str]:
+        """Otwiera pozycję z ręcznie określoną ilością"""
+        try:
+            self.logger.info(f"🎯 MANUAL OPEN: {symbol} {side} Qty: {quantity}")
+            
+            # Pobierz aktualną cenę
+            current_price = self.get_current_price(symbol)
+            if not current_price:
+                self.logger.warning(f"❌ Could not get price for {symbol}")
+                return None
+            
+            # Sprawdź czy symbol jest wspierany
+            if symbol not in self.assets:
+                self.logger.warning(f"⚠️ Symbol {symbol} not in assets, adding it")
+                self.assets.append(symbol)
+            
+            # Sprawdź dostępny balans
+            available_balance = self.get_account_balance()
+            if available_balance is None:
+                self.logger.warning("⚠️ Could not get real balance, using virtual")
+                available_balance = self.virtual_balance
+            
+            # Oblicz wartość i margin
+            position_value = quantity * current_price
+            margin_required = position_value / self.leverage
+            
+            # Sprawdź czy wystarczy środków
+            if margin_required > available_balance:
+                self.logger.warning(f"💰 Insufficient balance: Available ${available_balance:.2f}, Required ${margin_required:.2f}")
+                return None
+            
+            # Liquidation price
+            if side == "LONG":
+                liquidation_price = current_price * (1 - 0.9 / self.leverage)
+            else:
+                liquidation_price = current_price * (1 + 0.9 / self.leverage)
+            
+            # Plan wyjścia
+            exit_plan = self.calculate_llm_exit_plan(current_price, 0.8, side)
+            
+            # Składanie zlecenia na Bybit
+            order_id = None
+            if self.real_trading and hasattr(self, 'place_bybit_order'):
+                try:
+                    order_id = self.place_bybit_order(symbol, side, quantity, current_price)
+                    self.logger.info(f"📝 Bybit order placed: {order_id}")
+                except Exception as e:
+                    self.logger.error(f"❌ Bybit order failed: {e}")
+                    if not self.real_trading:  # Jeśli to tryb wirtualny, kontynuuj
+                        order_id = f"virtual_{int(time.time())}"
+                    else:
+                        return None
+            else:
+                order_id = f"virtual_{int(time.time())}"
+            
+            # Utwórz pozycję
+            position_id = f"manual_{self.position_id}"
+            self.position_id += 1
+            
+            position = {
+                'symbol': symbol,
+                'side': side,
+                'entry_price': current_price,
+                'quantity': quantity,
+                'leverage': self.leverage,
+                'margin': margin_required,
+                'liquidation_price': liquidation_price,
+                'entry_time': datetime.now(),
+                'status': 'ACTIVE',
+                'unrealized_pnl': 0,
+                'confidence': 0.8,
+                'llm_profile': f"MANUAL ({self.active_profile})",
+                'exit_plan': exit_plan,
+                'order_id': order_id,
+                'real_trading': self.real_trading,
+                'manual': True
+            }
+            
+            self.positions[position_id] = position
+            
+            # Aktualizuj wirtualny balans jeśli nie jest real trading
+            if not self.real_trading:
+                self.virtual_balance -= margin_required
+            
+            # Logowanie
+            tp_distance = (exit_plan['take_profit'] - current_price) / current_price * 100
+            sl_distance = (current_price - exit_plan['stop_loss']) / current_price * 100
+            
+            trading_mode = "REAL" if self.real_trading else "VIRTUAL"
+            
+            self.logger.info(f"✅ MANUAL OPEN SUCCESS: {position_id}")
+            self.logger.info(f"   {symbol} {side} @ ${current_price:.4f}")
+            self.logger.info(f"   Qty: {quantity}, Value: ${position_value:.2f}")
+            self.logger.info(f"   Margin: ${margin_required:.2f}")
+            self.logger.info(f"   🎯 TP: {exit_plan['take_profit']:.4f} ({tp_distance:+.2f}%)")
+            self.logger.info(f"   🛑 SL: {exit_plan['stop_loss']:.4f} ({sl_distance:+.2f}%)")
+            
+            return position_id
+            
+        except Exception as e:
+            self.logger.error(f"💥 Error in open_real_position: {e}")
+            import traceback
+            self.logger.error(f"💥 Stack trace: {traceback.format_exc()}")
+            return None
+            
     def get_binance_price(self, symbol: str) -> Optional[float]:
         """Pobiera aktualną cenę z API Binance - IDENTYCZNIE JAK W PIERWSZYM BOCIE"""
         try:
