@@ -430,7 +430,7 @@ class LLMTradingBot:
             return None
 
     def calculate_position_size(self, symbol: str, price: float, confidence: float) -> Tuple[float, float, float]:
-        """Oblicza wielkość pozycji w stylu LLM - TERAZ Z RZECZYWISTYM SALDEM Z BYBIT"""
+        """Oblicza wielkość pozycji w stylu LLM - TERAZ Z RZECZYWISTYM SALDEM Z BYBIT i 10x WIĘKSZE"""
         profile = self.get_current_profile()
         
         base_allocation = {
@@ -454,8 +454,9 @@ class LLMTradingBot:
             self.logger.warning("⚠️ Could not get real balance from Bybit, using initial capital")
             real_balance = self.virtual_capital  # fallback do wirtualnego kapitału
         
+        # ZWIĘKSZENIE 10x - mnożymy przez 10
         position_value = (real_balance * base_allocation * 
-                         confidence_multiplier * sizing_multiplier)
+                         confidence_multiplier * sizing_multiplier * 10)  # 10x większe
         
         max_position_value = real_balance * 0.4
         position_value = min(position_value, max_position_value)
@@ -755,7 +756,7 @@ class LLMTradingBot:
         return position_id
 
     def update_positions_pnl(self):
-        """Aktualizuje P&L wszystkich pozycji używając rzeczywistych cen z API"""
+        """Aktualizuje P&L wszystkich pozycji używając rzeczywistych cen z API - POPRAWIONE LICZENIE"""
         total_unrealized = 0
         total_margin = 0
         total_confidence = 0
@@ -771,10 +772,12 @@ class LLMTradingBot:
                 
             if position['side'] == 'LONG':
                 pnl_pct = (current_price - position['entry_price']) / position['entry_price']
-                unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+                # POPRAWIONE: NIE mnożymy przez dźwignię - to jest realny P&L
+                unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price']
             else:
                 pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
-                unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+                # POPRAWIONE: NIE mnożymy przez dźwignię - to jest realny P&L
+                unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price']
             
             position['unrealized_pnl'] = unrealized_pnl
             position['current_price'] = current_price
@@ -853,7 +856,7 @@ class LLMTradingBot:
         return positions_to_close
 
     def close_position(self, position_id: str, exit_reason: str, exit_price: float):
-        """Zamyka pozycję"""
+        """Zamyka pozycję - POPRAWIONE LICZENIE P&L"""
         position = self.positions[position_id]
         
         if position['side'] == 'LONG':
@@ -861,7 +864,8 @@ class LLMTradingBot:
         else:
             pnl_pct = (position['entry_price'] - exit_price) / position['entry_price']
         
-        realized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+        # POPRAWIONE: NIE mnożymy przez dźwignię - to jest realny P&L
+        realized_pnl = pnl_pct * position['quantity'] * position['entry_price']
         fee = abs(realized_pnl) * 0.001
         realized_pnl_after_fee = realized_pnl - fee
         
@@ -907,11 +911,12 @@ class LLMTradingBot:
         position['status'] = 'CLOSED'
         self.dashboard_data['net_realized'] = self.stats['total_pnl']
         
-        margin_return = pnl_pct * self.leverage * 100
+        # POPRAWIONE: Pokazujemy rzeczywisty % zysku/straty bez dźwigni
+        margin_return = pnl_pct * 100  # Realny procent
         pnl_color = "🟢" if realized_pnl_after_fee > 0 else "🔴"
         trading_mode = "REAL" if position.get('real_trading', False) else "VIRTUAL"
         
-        self.logger.info(f"{pnl_color} {trading_mode} CLOSE: {position['symbol']} {position['side']} - P&L: ${realized_pnl_after_fee:+.2f} ({margin_return:+.1f}% margin) - Reason: {exit_reason}")
+        self.logger.info(f"{pnl_color} {trading_mode} CLOSE: {position['symbol']} {position['side']} - P&L: ${realized_pnl_after_fee:+.2f} ({margin_return:+.1f}%) - Reason: {exit_reason}")
 
     def get_portfolio_diversity(self) -> float:
         """Oblicza dywersyfikację portfela - IDENTYCZNIE JAK W PIERWSZYM BOCIE"""
@@ -959,10 +964,12 @@ class LLMTradingBot:
                 
                 if position['side'] == 'LONG':
                     pnl_pct = (current_price - position['entry_price']) / position['entry_price']
-                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+                    # POPRAWIONE: NIE mnożymy przez dźwignię
+                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price']
                 else:
                     pnl_pct = (position['entry_price'] - current_price) / position['entry_price']
-                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price'] * position['leverage']
+                    # POPRAWIONE: NIE mnożymy przez dźwignię
+                    unrealized_pnl = pnl_pct * position['quantity'] * position['entry_price']
                 
                 # Oblicz odległości do TP/SL
                 if position['side'] == 'LONG':
@@ -1214,6 +1221,28 @@ def load_chart_data():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/open-position', methods=['POST'])
+def open_position():
+    """Ręczne otwieranie pozycji"""
+    try:
+        data = request.get_json()
+        symbol = data.get('symbol')
+        side = data.get('side')
+        quantity = float(data.get('quantity', 0))
+        
+        if not symbol or not side or quantity <= 0:
+            return jsonify({'error': 'Symbol, side and valid quantity are required'}), 400
+        
+        position_id = trading_bot.open_real_position(symbol, side, quantity)
+        
+        if position_id:
+            return jsonify({'status': 'Position opened successfully', 'position_id': position_id})
+        else:
+            return jsonify({'error': 'Failed to open position'}), 500
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     print("🚀 Starting LLM Trading Bot Server...")
     print("📍 Dashboard available at: http://localhost:5000")
@@ -1221,6 +1250,7 @@ if __name__ == '__main__':
     print("📈 Trading assets: BTC, ETH, SOL, XRP, BNB, DOGE")
     print("📊 Using BINANCE API for price data & analysis")
     print("⚡ Using BYBIT API for order execution")
-    print("💰 Using VIRTUAL balance for position sizing (identical to first bot)")
+    print("💰 Position size: 10x larger than before")
+    print("📈 P&L calculation: Fixed (no leverage multiplier)")
     print("🔗 Real Trading: Enabled (with Bybit API)" if trading_bot.real_trading else "🔗 Real Trading: Disabled (Virtual Mode)")
     app.run(debug=True, host='0.0.0.0', port=5000)
