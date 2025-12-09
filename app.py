@@ -131,8 +131,17 @@ def open_position():
         
         if not symbol or not side or quantity <= 0:
             return jsonify({'error': 'Symbol, side and valid quantity are required'}), 400
+        
+        # POPRAWIAMY: używamy llm_trading_bot zamiast trading_bot
+        if not llm_trading_bot:
+            return jsonify({'error': 'Bot not initialized'}), 500
+        
+        # Potrzebujemy funkcji open_real_position w LLMTradingBot
+        # Jeśli jej nie ma, musimy dodać
+        if not hasattr(llm_trading_bot, 'open_real_position'):
+            return jsonify({'error': 'open_real_position function not available in bot'}), 500
             
-        position_id = trading_bot.open_real_position(symbol, side, quantity)
+        position_id = llm_trading_bot.open_real_position(symbol, side, quantity)
         
         if position_id:
             return jsonify({'status': 'Position opened successfully', 'position_id': position_id})
