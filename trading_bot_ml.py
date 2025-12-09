@@ -63,7 +63,7 @@ class LLMTradingBot:
         self.virtual_balance = initial_capital
         self.leverage = leverage
         self.positions = {}
-        self.trade_history = []
+        self.trade_history = []  # ZAPISUJE WSZYSTKIE TRANSAKCJE
         self.is_running = False
         self.position_id = 0
         
@@ -856,7 +856,7 @@ class LLMTradingBot:
         return positions_to_close
 
     def close_position(self, position_id: str, exit_reason: str, exit_price: float):
-        """Zamyka pozycję - POPRAWIONE LICZENIE P&L"""
+        """Zamyka pozycję - POPRAWIONE LICZENIE P&L i ZAPISYWANIE QUANTITY"""
         position = self.positions[position_id]
         
         if position['side'] == 'LONG':
@@ -877,13 +877,20 @@ class LLMTradingBot:
         
         # NIE AKTUALIZUJEMY WIRTUALNEGO BALANSU - zostanie zaktualizowany przy następnym get_account_balance()
         
+        # POPRAWIONE: Upewniamy się że quantity jest prawidłowe
+        quantity = position.get('quantity', 0)
+        if quantity <= 0:
+            self.logger.warning(f"⚠️ Invalid quantity for position {position_id}: {quantity}, setting to 0.001")
+            quantity = 0.001
+        
         trade_record = {
             'position_id': position_id,
             'symbol': position['symbol'],
             'side': position['side'],
             'entry_price': position['entry_price'],
             'exit_price': exit_price,
-            'quantity': position['quantity'],
+            'quantity': quantity,  # ZAPISUJEMY POPRAWNE QUANTITY
+            'position_value': quantity * position['entry_price'],  # Dodajemy wartość pozycji
             'realized_pnl': realized_pnl_after_fee,
             'exit_reason': exit_reason,
             'llm_profile': position['llm_profile'],
@@ -894,6 +901,7 @@ class LLMTradingBot:
             'real_trading': position.get('real_trading', False)
         }
         
+        # ZAPISUJEMY WSZYSTKIE TRANSAKCJE - NIE MA LIMITU
         self.trade_history.append(trade_record)
         
         self.stats['total_trades'] += 1
@@ -904,9 +912,13 @@ class LLMTradingBot:
         else:
             self.stats['losing_trades'] += 1
         
-        total_holding = sum((t['exit_time'] - t['entry_time']).total_seconds() 
-                          for t in self.trade_history) / 3600
-        self.stats['avg_holding_time'] = total_holding / len(self.trade_history) if self.trade_history else 0
+        # Aktualizuj średni czas trzymania na podstawie WSZYSTKICH transakcji
+        if self.trade_history:
+            total_holding = sum((t['exit_time'] - t['entry_time']).total_seconds() 
+                              for t in self.trade_history) / 3600
+            self.stats['avg_holding_time'] = total_holding / len(self.trade_history)
+        else:
+            self.stats['avg_holding_time'] = 0
         
         position['status'] = 'CLOSED'
         self.dashboard_data['net_realized'] = self.stats['total_pnl']
@@ -917,6 +929,7 @@ class LLMTradingBot:
         trading_mode = "REAL" if position.get('real_trading', False) else "VIRTUAL"
         
         self.logger.info(f"{pnl_color} {trading_mode} CLOSE: {position['symbol']} {position['side']} - P&L: ${realized_pnl_after_fee:+.2f} ({margin_return:+.1f}%) - Reason: {exit_reason}")
+        self.logger.info(f"   Quantity: {quantity}, Entry: ${position['entry_price']}, Exit: ${exit_price}")
 
     def get_portfolio_diversity(self) -> float:
         """Oblicza dywersyfikację portfela - IDENTYCZNIE JAK W PIERWSZYM BOCIE"""
@@ -1008,19 +1021,26 @@ class LLMTradingBot:
             except:
                 confidence_levels[symbol] = 0
         
+        # ZMIANA: ZWRACAMY WSZYSTKIE TRANSAKCJE - NIE MA LIMITU
         recent_trades = []
-        for trade in self.trade_history[-10:]:
+        # Sortujemy od najnowszych do najstarszych
+        all_trades_sorted = sorted(self.trade_history, key=lambda x: x['exit_time'], reverse=True)
+        
+        for trade in all_trades_sorted:
             recent_trades.append({
                 'symbol': trade['symbol'],
                 'side': trade['side'],
                 'entry_price': trade['entry_price'],
                 'exit_price': trade['exit_price'],
+                'quantity': trade.get('quantity', 0),  # ZAWSZE ZWRACAMY QUANTITY
+                'position_value': trade.get('position_value', trade['quantity'] * trade['entry_price']),
                 'realized_pnl': trade['realized_pnl'],
                 'exit_reason': trade['exit_reason'],
                 'llm_profile': trade['llm_profile'],
                 'confidence': trade['confidence'],
                 'holding_hours': round(trade['holding_hours'], 2),
-                'exit_time': trade['exit_time'].strftime('%H:%M:%S'),
+                'entry_time': trade['entry_time'].strftime('%Y-%m-%d %H:%M:%S'),
+                'exit_time': trade['exit_time'].strftime('%Y-%m-%d %H:%M:%S'),
                 'real_trading': trade.get('real_trading', False)
             })
         
@@ -1056,7 +1076,7 @@ class LLMTradingBot:
             },
             'confidence_levels': confidence_levels,
             'active_positions': active_positions,
-            'recent_trades': recent_trades,
+            'recent_trades': recent_trades,  # ZAWSZE WSZYSTKIE TRANSAKCJE
             'total_unrealized_pnl': total_unrealized_pnl,
             'last_update': self.dashboard_data['last_update'].isoformat()
         }
@@ -1109,6 +1129,7 @@ class LLMTradingBot:
                 
                 portfolio_value = self.dashboard_data['account_value']
                 self.logger.info(f"📊 Portfolio: ${portfolio_value:.2f} | Active Positions: {active_count}/{self.max_simultaneous_positions}")
+                self.logger.info(f"📊 Total trades in history: {len(self.trade_history)}")
                 
                 wait_time = random.randint(30, 90)
                 for i in range(wait_time):
@@ -1252,5 +1273,7 @@ if __name__ == '__main__':
     print("⚡ Using BYBIT API for order execution")
     print("💰 Position size: 10x larger than before")
     print("📈 P&L calculation: Fixed (no leverage multiplier)")
+    print("📊 Recent trades: ALL trades saved (no limit)")
+    print("📦 Trade history: Correct quantity always saved")
     print("🔗 Real Trading: Enabled (with Bybit API)" if trading_bot.real_trading else "🔗 Real Trading: Disabled (Virtual Mode)")
     app.run(debug=True, host='0.0.0.0', port=5000)
