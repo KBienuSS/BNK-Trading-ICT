@@ -34,7 +34,7 @@ logging.basicConfig(
 )
 
 class LLMTradingBot:
-    def __init__(self, api_key=None, api_secret=None, initial_capital=10000, leverage=10):
+    def __init__(self, api_key=None, api_secret=None, initial_capital=10000, leverage=50):
         # Inicjalizacja loggera NAJPIERW
         self.logger = logging.getLogger(__name__)
         
@@ -1158,7 +1158,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Inicjalizacja bota
-trading_bot = LLMTradingBot(initial_capital=10000, leverage=10)
+trading_bot = LLMTradingBot(initial_capital=10000, leverage=50)
 
 # Routes do renderowania stron
 @app.route('/')
