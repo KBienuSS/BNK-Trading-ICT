@@ -437,7 +437,7 @@ class LLMTradingBot:
             'Claude': 0.15,
             'Gemini': 0.25, 
             'GPT': 0.10,
-            'Qwen': 3.00
+            'Qwen': 0.30
         }.get(self.active_profile, 0.15)
         
         confidence_multiplier = 0.5 + (confidence * 0.5)
@@ -461,7 +461,7 @@ class LLMTradingBot:
         max_position_value = real_balance * 0.4
         position_value = min(position_value, max_position_value)
         
-        quantity = position_value / price
+        quantity = (position_value / price) * 10
         margin_required = position_value / self.leverage
         
         return quantity, position_value, margin_required
