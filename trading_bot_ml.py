@@ -437,7 +437,7 @@ class LLMTradingBot:
             'Claude': 0.15,
             'Gemini': 0.25, 
             'GPT': 0.10,
-            'Qwen': 0.30
+            'Qwen': 3.00
         }.get(self.active_profile, 0.15)
         
         confidence_multiplier = 0.5 + (confidence * 0.5)
