@@ -461,7 +461,7 @@ class LLMTradingBot:
         max_position_value = real_balance * 0.4
         position_value = min(position_value, max_position_value)
         
-        quantity = (position_value / price) * 10
+        quantity = (position_value / price)
         margin_required = position_value / self.leverage
         
         return quantity, position_value, margin_required
