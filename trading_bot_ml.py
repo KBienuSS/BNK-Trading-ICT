@@ -458,7 +458,7 @@ class LLMTradingBot:
         position_value = (real_balance * base_allocation * 
                          confidence_multiplier * sizing_multiplier * 70)  # 10x większe
         
-        max_position_value = real_balance * 0.8
+        max_position_value = real_balance * 4
         position_value = min(position_value, max_position_value)
         
         quantity = (position_value / price)
