@@ -1158,7 +1158,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Inicjalizacja bota
-trading_bot = LLMTradingBot(initial_capital=10000, leverage=50)
+trading_bot = LLMTradingBot(initial_capital=10000, leverage=75)
 
 # Routes do renderowania stron
 @app.route('/')
