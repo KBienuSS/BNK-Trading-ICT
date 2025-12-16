@@ -456,12 +456,12 @@ class LLMTradingBot:
         
         # ZWIĘKSZENIE 10x - mnożymy przez 10
         position_value = (real_balance * base_allocation * 
-                         confidence_multiplier * sizing_multiplier * 10)  # 10x większe
+                         confidence_multiplier * sizing_multiplier * 70)  # 10x większe
         
         max_position_value = real_balance * 0.4
         position_value = min(position_value, max_position_value)
         
-        quantity = (position_value / price) * 7
+        quantity = (position_value / price)
         margin_required = position_value / self.leverage
         
         return quantity, position_value, margin_required
