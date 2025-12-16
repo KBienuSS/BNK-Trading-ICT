@@ -34,7 +34,7 @@ logging.basicConfig(
 )
 
 class LLMTradingBot:
-    def __init__(self, api_key=None, api_secret=None, initial_capital=10000, leverage=50):
+    def __init__(self, api_key=None, api_secret=None, initial_capital=10000, leverage=75):
         # Inicjalizacja loggera NAJPIERW
         self.logger = logging.getLogger(__name__)
         
@@ -461,7 +461,7 @@ class LLMTradingBot:
         max_position_value = real_balance * 0.4
         position_value = min(position_value, max_position_value)
         
-        quantity = (position_value / price)
+        quantity = (position_value / price) * 7
         margin_required = position_value / self.leverage
         
         return quantity, position_value, margin_required
