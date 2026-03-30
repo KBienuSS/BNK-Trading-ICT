@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BNK · Trading Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='12' fill='%230a0a0a'/><text y='72' x='50' text-anchor='middle' font-size='62' font-family='serif' fill='%23c9a84c'>₿</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;600&family=DM+Sans:wght@300;400;500&family=DM+Mono:wght@400&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -201,7 +202,7 @@ tbody tr:hover{background:rgba(201,168,76,0.03);}
   <div class="kpi"><div class="kpi-label">Available Cash</div><div class="kpi-val" id="kCash">$0.00</div><div class="kpi-sub">equity buffer</div></div>
   <div class="kpi"><div class="kpi-label">Net Realized P&L</div><div class="kpi-val" id="kNet">$0.00</div><div class="kpi-sub">closed trades</div></div>
   <div class="kpi"><div class="kpi-label">Unrealized P&L</div><div class="kpi-val" id="kUnr">$0.00</div><div class="kpi-sub">open positions</div></div>
-  <div class="kpi"><div class="kpi-label">Total Return</div><div class="kpi-val" id="kRet">0.00%</div><div class="kpi-sub">vs $10,000</div></div>
+  <div class="kpi"><div class="kpi-label">Total Return</div><div class="kpi-val" id="kRet">0.00%</div><div class="kpi-sub" id="kRetSub">vs initial capital</div></div>
   <div class="kpi"><div class="kpi-label">Win Rate</div><div class="kpi-val gold" id="kWr">0%</div><div class="kpi-sub" id="kWrSub">0 trades</div></div>
 </div>
 
@@ -427,13 +428,22 @@ async function fetchData(){
   try{
     const r=await fetch('/api/trading-data');const d=await r.json();if(d.error)return;
     const acc=d.account_summary||{},pm=d.performance_metrics||{},cfg=d.llm_config||{};
-    const tv=acc.total_value||CAPITAL,nr=acc.net_realized||0,ret=(tv-CAPITAL)/CAPITAL*100;
+    const tv=acc.total_value||CAPITAL;
+    const nr=acc.net_realized||0;
+
+    // ── TOTAL RETURN: account_value / (account_value - net_realized) - 1
+    // initial_capital = account_value - net_realized (co mieliśmy zanim zaczęliśmy tradować)
+    const initialEst = tv - nr;
+    const ret = initialEst > 0 ? (tv / initialEst - 1) * 100 : 0;
+
     const kv=$('kVal');if(kv&&lastVal!==0&&tv!==lastVal){kv.parentElement.classList.remove('f-pos','f-neg');void kv.parentElement.offsetWidth;kv.parentElement.classList.add(tv>lastVal?'f-pos':'f-neg');}
-    setText('kVal','$'+f2(tv));setText('kValSub',(ret>=0?'+':'')+f2(ret)+'% all-time');
+    setText('kVal','$'+f2(tv));
+    setText('kValSub',(ret>=0?'+':'')+f2(ret)+'% return');
     setText('kCash','$'+f2(acc.available_cash||0));
-    const kn=$('kNet');if(kn){kn.textContent='$'+f2(nr);kn.className='kpi-val '+(nr>=0?'pos':'neg');}
+    const kn=$('kNet');if(kn){kn.textContent=(nr>=0?'+':'')+f2(nr);kn.className='kpi-val '+(nr>=0?'pos':'neg');}
     const ku=$('kUnr');const uv=acc.unrealized_pnl||0;if(ku){ku.textContent=(sign(uv))+'$'+f2(Math.abs(uv));ku.className='kpi-val '+(uv>=0?'pos':'neg');}
     const kr=$('kRet');if(kr){kr.textContent=(ret>=0?'+':'')+f2(ret)+'%';kr.className='kpi-val '+(ret>=0?'pos':'neg');}
+    setText('kRetSub','base $'+f2(initialEst));
     setText('kWr',f2(pm.win_rate||0)+'%');setText('kWrSub',(pm.total_trades||0)+' trades');
     setText('mLong',pm.long_trades||0);setText('mShort',pm.short_trades||0);setText('mHold',f2(pm.avg_holding_hours||0)+'h');setText('mPU',f2(pm.portfolio_utilization||0)+'%');setText('mConf',f2(pm.avg_confidence||0)+'%');setText('mLev',(cfg.leverage||10)+'×');setText('mRisk',(cfg.risk_per_trade_pct||1.5)+'%');setText('mFees','$'+f2(pm.total_fees||0));
     renderPositions(d.active_positions||[]);renderTrades(d.recent_trades||[]);
