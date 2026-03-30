@@ -329,7 +329,8 @@ tbody tr:hover{background:rgba(201,168,76,0.03);}
 <script>
 'use strict';
 const CAPITAL=10000, ASSETS=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','BNBUSDT','DOGEUSDT'];
-let chartInst, chartData={labels:[],values:[]}, lastVal=0, prevPx={}, sigCache={}, selAsset='BTCUSDT';
+let chartInst, chartData={labels:[],values:[]}, lastVal=0, lastNR=null, prevPx={}, sigCache={}, selAsset='BTCUSDT';
+
 const f2=n=>n==null?'—':n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const f4=n=>n==null?'—':n.toLocaleString('en-US',{minimumFractionDigits:4,maximumFractionDigits:4});
 const pxFmt=(sym,n)=>{if(n==null)return'—';if(sym==='BTCUSDT')return'$'+Math.round(n).toLocaleString();if(sym==='XRPUSDT'||sym==='DOGEUSDT')return'$'+n.toFixed(4);return'$'+n.toFixed(2);};
@@ -347,16 +348,20 @@ function initChart(){
   ]},options:{responsive:true,maintainAspectRatio:false,animation:{duration:700,easing:'easeOutQuart'},plugins:{legend:{labels:{color:'#8a8070',font:{family:'DM Mono',size:10},usePointStyle:true}},tooltip:{backgroundColor:'rgba(22,22,22,0.97)',borderColor:'rgba(201,168,76,0.25)',borderWidth:1,titleColor:'#c9a84c',bodyColor:'#f5f0e8',titleFont:{family:'DM Mono',size:11},bodyFont:{family:'DM Mono',size:11},callbacks:{label:c=>`${c.dataset.label}: $${f2(c.parsed.y)}`}}},scales:{y:{grid:{color:'rgba(201,168,76,0.06)'},ticks:{color:'#8a8070',font:{family:'DM Mono',size:10},callback:v=>'$'+v.toLocaleString()}},x:{grid:{color:'rgba(201,168,76,0.04)'},ticks:{color:'#8a8070',font:{family:'DM Mono',size:10},maxTicksLimit:8}}}}});
 }
 
-function pushChart(val){
-  if(val===lastVal)return;
-  chartData.labels.push(ts()); chartData.values.push(val);
-  if(chartData.labels.length>60){chartData.labels=chartData.labels.slice(-60);chartData.values=chartData.values.slice(-60);}
+function pushChart(val, nr){
+  // Aktualizuj tylko gdy zmienił się net_realized (zamknięta pozycja)
+  if(lastNR !== null && nr === lastNR) return;
+  // Pomiń pierwszy punkt startowy (brak tradesów)
+  if(lastNR === null && nr === 0){ lastNR = nr; lastVal = val; return; }
+  chartData.labels.push(ts());
+  chartData.values.push(val);
+  if(chartData.labels.length>200){chartData.labels=chartData.labels.slice(-200);chartData.values=chartData.values.slice(-200);}
   chartInst.data.labels=chartData.labels;
   chartInst.data.datasets[0].data=chartData.values;
   chartInst.data.datasets[1].data=chartData.labels.map(()=>CAPITAL);
   chartInst.update('active');
-  setText('chartBadge',chartData.labels.length+' points');
-  lastVal=val; saveChart();
+  setText('chartBadge',chartData.labels.length+' trades');
+  lastNR=nr; lastVal=val; saveChart();
 }
 async function saveChart(){try{await fetch('/api/save-chart-data',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(chartData)});}catch(e){}}
 async function loadChartData(){try{const r=await fetch('/api/load-chart-data');const d=await r.json();if(d.status==='success'&&d.chartData){chartData.labels=d.chartData.labels||[];chartData.values=d.chartData.values||[];if(chartInst){chartInst.data.labels=chartData.labels;chartInst.data.datasets[0].data=chartData.values;chartInst.data.datasets[1].data=chartData.labels.map(()=>CAPITAL);chartInst.update();}setText('chartBadge',chartData.labels.length+' points');}}catch(e){}}
@@ -448,7 +453,7 @@ async function fetchData(){
     setText('mLong',pm.long_trades||0);setText('mShort',pm.short_trades||0);setText('mHold',f2(pm.avg_holding_hours||0)+'h');setText('mPU',f2(pm.portfolio_utilization||0)+'%');setText('mConf',f2(pm.avg_confidence||0)+'%');setText('mLev',(cfg.leverage||10)+'×');setText('mRisk',(cfg.risk_per_trade_pct||1.5)+'%');setText('mFees','$'+f2(pm.total_fees||0));
     renderPositions(d.active_positions||[]);renderTrades(d.recent_trades||[]);
     const tu=d.total_unrealized_pnl||0,tuEl=$('totalUnr');if(tuEl){tuEl.textContent=(sign(tu))+'$'+f2(Math.abs(tu));tuEl.className='unr-v '+(tu>=0?'pos':'neg');}
-    updateConfGrid(d.confidence_levels||{});renderStrat(cfg);pushChart(tv);
+    updateConfGrid(d.confidence_levels||{});renderStrat(cfg);pushChart(tv,nr);
     ASSETS.forEach(sym=>fetchSignal(sym));
     setText('footerTs','Last sync: '+ts());
   }catch(e){console.error('fetchData',e);}
