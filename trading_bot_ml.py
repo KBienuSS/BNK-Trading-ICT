@@ -81,21 +81,39 @@ def volume_ma(volume: pd.Series, period: int = 20) -> pd.Series:
     return volume.rolling(period).mean()
 
 
+def adx(high: pd.Series, low: pd.Series, close: pd.Series,
+        period: int = 14) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    """Returns (ADX, +DI, -DI)."""
+    prev_high  = high.shift(1)
+    prev_low   = low.shift(1)
+    plus_dm    = (high - prev_high).clip(lower=0)
+    minus_dm   = (prev_low - low).clip(lower=0)
+    plus_dm    = plus_dm.where(plus_dm > minus_dm, 0.0)
+    minus_dm   = minus_dm.where(minus_dm > plus_dm, 0.0)
+    atr_series = atr(high, low, close, period)
+    plus_di    = 100 * ema(plus_dm, period) / atr_series.replace(0, np.nan)
+    minus_di   = 100 * ema(minus_dm, period) / atr_series.replace(0, np.nan)
+    dx         = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    adx_line   = ema(dx, period)
+    return adx_line, plus_di, minus_di
+
+
 class SignalEngine:
-    LONG_THRESHOLD  = 0.40
-    SHORT_THRESHOLD = 0.40
+    LONG_THRESHOLD  = 0.45
+    SHORT_THRESHOLD = 0.45
 
     WEIGHTS = {
-        "ema_cross":   0.30,
-        "macd":        0.25,
+        "ema_cross":   0.28,
+        "macd":        0.22,
         "rsi":         0.20,
         "bb":          0.15,
         "volume":      0.10,
+        "trend":       0.05,
     }
 
     @staticmethod
     def score(df: pd.DataFrame) -> Tuple[str, float, Dict]:
-        if len(df) < 60:
+        if len(df) < 80:
             return "HOLD", 0.0, {}
 
         close   = df["close"]
@@ -116,6 +134,8 @@ class SignalEngine:
 
         atr14 = atr(high, low, close, 14)
 
+        adx14, plus_di14, minus_di14 = adx(high, low, close, 14)
+
         c0  = close.iloc[-1]
         c1  = close.iloc[-2]
         e20 = ema20.iloc[-1]
@@ -123,13 +143,21 @@ class SignalEngine:
         e20_prev = ema20.iloc[-2]
         e50_prev = ema50.iloc[-2]
 
+        # EMA200 trend filter (only when enough data available)
+        has_ema200 = len(df) >= 200
+        if has_ema200:
+            ema200_val = float(ema(close, 200).iloc[-1])
+            trend_long  = c0 > ema200_val
+            trend_short = c0 < ema200_val
+        else:
+            ema200_val  = None
+            trend_long  = True
+            trend_short = True
+
         r0  = rsi14.iloc[-1]
         r1  = rsi14.iloc[-2]
+        r2  = rsi14.iloc[-3] if len(rsi14) > 2 else r1
 
-        m0  = macd_line.iloc[-1]
-        s0  = signal_line.iloc[-1]
-        m1  = macd_line.iloc[-2]
-        s1  = signal_line.iloc[-2]
         h0  = histogram.iloc[-1]
         h1  = histogram.iloc[-2]
 
@@ -140,8 +168,12 @@ class SignalEngine:
         vol0    = volume.iloc[-1]
         vol_avg = vol_ma20.iloc[-1]
 
-        atr_val = atr14.iloc[-1]
+        atr_val  = atr14.iloc[-1]
+        adx_val  = float(adx14.iloc[-1])  if not pd.isna(adx14.iloc[-1])  else 0.0
+        pdi_val  = float(plus_di14.iloc[-1])  if not pd.isna(plus_di14.iloc[-1])  else 0.0
+        mdi_val  = float(minus_di14.iloc[-1]) if not pd.isna(minus_di14.iloc[-1]) else 0.0
 
+        # ── EMA cross vote ──────────────────────────────────────────────────
         if e20 > e50 and e20_prev <= e50_prev:
             ema_vote = 1.0
         elif e20 < e50 and e20_prev >= e50_prev:
@@ -153,6 +185,14 @@ class SignalEngine:
         else:
             ema_vote = 0.0
 
+        # Boost/dampen EMA vote by EMA200 trend alignment
+        if has_ema200:
+            if ema_vote > 0 and not trend_long:
+                ema_vote *= 0.3
+            elif ema_vote < 0 and not trend_short:
+                ema_vote *= 0.3
+
+        # ── MACD vote ───────────────────────────────────────────────────────
         if h0 > 0 and h1 <= 0:
             macd_vote = 1.0
         elif h0 < 0 and h1 >= 0:
@@ -164,35 +204,48 @@ class SignalEngine:
         else:
             macd_vote = 0.0
 
-        if r0 < 35 and r0 > r1:
+        # ── RSI vote (tighter 30/70 levels, considers momentum) ─────────────
+        if r0 < 30 and r0 > r1:
             rsi_vote = 1.0
-        elif r0 > 65 and r0 < r1:
+        elif r0 < 35 and r0 > r1 and r1 < r2:
+            rsi_vote = 0.8          # oversold + momentum turning
+        elif r0 > 70 and r0 < r1:
             rsi_vote = -1.0
-        elif 40 <= r0 <= 60:
-            rsi_vote = 0.0
-        elif r0 > 60:
-            rsi_vote = -0.3
+        elif r0 > 65 and r0 < r1 and r1 > r2:
+            rsi_vote = -0.8         # overbought + momentum turning
+        elif 45 <= r0 <= 55:
+            rsi_vote = 0.0          # neutral zone
+        elif r0 > 55 and trend_short:
+            rsi_vote = -0.2
+        elif r0 < 45 and trend_long:
+            rsi_vote = 0.2
         else:
-            rsi_vote = 0.3
+            rsi_vote = 0.0
 
-        bb_width = (bb_u - bb_l) / bb_m
+        # ── Bollinger Band vote ─────────────────────────────────────────────
+        bb_width = (bb_u - bb_l) / bb_m if bb_m else 0
         if c0 <= bb_l and c1 > bb_l:
             bb_vote = 1.0
         elif c0 >= bb_u and c1 < bb_u:
             bb_vote = -1.0
         elif c0 < bb_m and c0 > bb_l:
-            bb_vote = 0.3
+            bb_vote = 0.3 if trend_long else 0.1
         elif c0 > bb_m and c0 < bb_u:
-            bb_vote = -0.3
+            bb_vote = -0.3 if trend_short else -0.1
         else:
             bb_vote = 0.0
 
+        # Ignore BB signals during very low volatility (squeeze)
+        if bb_width < 0.01:
+            bb_vote *= 0.3
+
+        # ── Volume vote ─────────────────────────────────────────────────────
         if vol_avg and vol_avg > 0:
             vol_ratio = vol0 / vol_avg
         else:
             vol_ratio = 1.0
 
-        if vol_ratio > 1.5:
+        if vol_ratio > 2.0:
             price_move = c0 - c1
             if price_move > 0:
                 vol_vote = 1.0
@@ -200,10 +253,28 @@ class SignalEngine:
                 vol_vote = -1.0
             else:
                 vol_vote = 0.0
+        elif vol_ratio > 1.5:
+            price_move = c0 - c1
+            vol_vote = 0.7 if price_move > 0 else (-0.7 if price_move < 0 else 0.0)
         elif vol_ratio > 1.0:
             vol_vote = 0.3 if (c0 > c1) else -0.3
         else:
             vol_vote = 0.0
+
+        # ── Trend (EMA200 + ADX) vote ────────────────────────────────────────
+        trend_vote = 0.0
+        if has_ema200:
+            if trend_long and adx_val > 20:
+                trend_vote = min(1.0, adx_val / 40)
+            elif trend_short and adx_val > 20:
+                trend_vote = -min(1.0, adx_val / 40)
+
+        # ── ADX filter: suppress signals in ranging markets ──────────────────
+        adx_mult = 1.0
+        if adx_val < 15:
+            adx_mult = 0.4    # very weak trend — heavily dampen signal
+        elif adx_val < 20:
+            adx_mult = 0.7    # weak trend — moderate dampen
 
         w = SignalEngine.WEIGHTS
         composite = (
@@ -212,7 +283,8 @@ class SignalEngine:
             + w["rsi"]     * rsi_vote
             + w["bb"]      * bb_vote
             + w["volume"]  * vol_vote
-        )
+            + w["trend"]   * trend_vote
+        ) * adx_mult
         total_weight = sum(w.values())
         score = composite / total_weight
 
@@ -221,6 +293,12 @@ class SignalEngine:
         elif score <= -SignalEngine.SHORT_THRESHOLD:
             signal = "SHORT"
         else:
+            signal = "HOLD"
+
+        # Hard block: don't go long in confirmed downtrend or short in uptrend
+        if has_ema200 and signal == "LONG" and not trend_long:
+            signal = "HOLD"
+        elif has_ema200 and signal == "SHORT" and not trend_short:
             signal = "HOLD"
 
         if signal == "LONG":
@@ -237,11 +315,14 @@ class SignalEngine:
             "rsi_vote":    round(rsi_vote, 2),
             "bb_vote":     round(bb_vote, 2),
             "vol_vote":    round(vol_vote, 2),
+            "trend_vote":  round(trend_vote, 2),
             "rsi_value":   round(r0, 1),
             "atr":         round(atr_val, 6),
             "vol_ratio":   round(vol_ratio, 2),
+            "adx":         round(adx_val, 1),
             "ema20":       round(e20, 4),
             "ema50":       round(e50, 4),
+            "ema200":      round(ema200_val, 4) if ema200_val else None,
             "bb_upper":    round(bb_u, 4),
             "bb_lower":    round(bb_l, 4),
         }
@@ -252,13 +333,13 @@ class SignalEngine:
 class LLMTradingBot:
     ASSETS           = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT"]
     KLINE_INTERVAL   = "60"
-    KLINE_LIMIT      = 100
+    KLINE_LIMIT      = 220      # 220 candles — wystarczy na EMA200 + bufor
     LOOP_INTERVAL    = 300
 
     RISK_PER_TRADE   = 0.015
     MAX_POSITIONS    = 4
     LEVERAGE         = 10
-    MIN_CONFIDENCE   = 0.45
+    MIN_CONFIDENCE   = 0.55     # wyższy próg — bardziej selektywne wejścia
 
     TP_ATR_MULT      = 3.0
     SL_ATR_MULT      = 1.5
@@ -301,6 +382,19 @@ class LLMTradingBot:
         self.virtual_capital  = initial_capital
         self.virtual_balance  = initial_capital
 
+        # Jeśli real trading — pobierz saldo z Bybit i użyj jako initial_capital
+        if self.real_trading and self.session:
+            try:
+                resp = self.session.get_wallet_balance(accountType="UNIFIED")
+                if resp["retCode"] == 0:
+                    real_bal = float(resp["result"]["list"][0]["totalEquity"])
+                    self.initial_capital = real_bal
+                    self.virtual_capital = real_bal
+                    self.virtual_balance = real_bal
+                    self.logger.info(f"💰 Saldo startowe z Bybit: ${real_bal:.2f}")
+            except Exception as exc:
+                self.logger.warning(f"⚠️ Nie udało się pobrać salda startowego: {exc}")
+
         self.positions:     Dict[str, dict] = {}
         self.trade_history: List[dict]      = []
         self.position_id    = 0
@@ -322,8 +416,8 @@ class LLMTradingBot:
         }
 
         self.dashboard_data = {
-            "account_value":      initial_capital,
-            "available_cash":     initial_capital,
+            "account_value":      self.initial_capital,
+            "available_cash":     self.initial_capital,
             "total_fees":         0.0,
             "net_realized":       0.0,
             "unrealized_pnl":     0.0,
@@ -843,6 +937,21 @@ class LLMTradingBot:
         position["status"] = "CLOSED"
         self.dashboard_data["net_realized"] = self.stats["total_pnl"]
 
+        # Natychmiastowa aktualizacja equity po zamknięciu pozycji
+        remaining_unrealized = sum(
+            p["unrealized_pnl"] for p in self.positions.values()
+            if p["status"] == "ACTIVE"
+        )
+        if self.real_trading:
+            equity = self.get_account_balance()
+            if equity is not None:
+                self.dashboard_data["account_value"]  = equity + remaining_unrealized
+                self.dashboard_data["available_cash"] = equity
+                self.virtual_balance = equity
+        else:
+            self.dashboard_data["account_value"]  = self.virtual_balance + remaining_unrealized
+            self.dashboard_data["available_cash"] = self.virtual_balance
+
         icon = "🟢" if net_pnl > 0 else "🔴"
         self.logger.info(
             f"{icon} CLOSE {position['side']}: {position['symbol']} "
@@ -1072,11 +1181,12 @@ class LLMTradingBot:
 
         return {
             "account_summary": {
-                "total_value":    round(self.dashboard_data["account_value"], 2),
-                "available_cash": round(self.dashboard_data["available_cash"], 2),
-                "net_realized":   round(self.dashboard_data["net_realized"], 2),
-                "unrealized_pnl": round(self.dashboard_data["unrealized_pnl"], 2),
-                "real_trading":   self.real_trading,
+                "total_value":      round(self.dashboard_data["account_value"], 2),
+                "available_cash":   round(self.dashboard_data["available_cash"], 2),
+                "net_realized":     round(self.dashboard_data["net_realized"], 2),
+                "unrealized_pnl":   round(self.dashboard_data["unrealized_pnl"], 2),
+                "real_trading":     self.real_trading,
+                "initial_capital":  round(self.initial_capital, 2),
             },
             "performance_metrics": {
                 "total_return_pct":     round(ret_pct, 2),
