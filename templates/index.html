@@ -328,7 +328,8 @@ tbody tr:hover{background:rgba(201,168,76,0.03);}
 </div>
 <script>
 'use strict';
-const CAPITAL=10000, ASSETS=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','BNBUSDT','DOGEUSDT'];
+const ASSETS=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','BNBUSDT','DOGEUSDT'];
+let CAPITAL=10000; // zostanie nadpisany rzeczywistym saldem z API
 let chartInst, chartData={labels:[],values:[]}, lastVal=0, lastNR=null, prevPx={}, sigCache={}, selAsset='BTCUSDT';
 
 const f2=n=>n==null?'—':n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -436,10 +437,18 @@ async function fetchData(){
     const tv=acc.total_value||CAPITAL;
     const nr=acc.net_realized||0;
 
-    // ── TOTAL RETURN: account_value / (account_value - net_realized) - 1
-    // initial_capital = account_value - net_realized (co mieliśmy zanim zaczęliśmy tradować)
-    const initialEst = tv - nr;
-    const ret = initialEst > 0 ? (tv / initialEst - 1) * 100 : 0;
+    // Aktualizuj CAPITAL z prawdziwego salda startowego z API
+    if(acc.initial_capital && acc.initial_capital > 0){
+      CAPITAL = acc.initial_capital;
+      // Zaktualizuj baseline na wykresie jeśli już zainicjalizowany
+      if(chartInst && chartData.labels.length > 0){
+        chartInst.data.datasets[1].data = chartData.labels.map(()=>CAPITAL);
+        chartInst.update('none');
+      }
+    }
+
+    // ── TOTAL RETURN: account_value / initial_capital - 1
+    const ret = CAPITAL > 0 ? (tv / CAPITAL - 1) * 100 : 0;
 
     const kv=$('kVal');if(kv&&lastVal!==0&&tv!==lastVal){kv.parentElement.classList.remove('f-pos','f-neg');void kv.parentElement.offsetWidth;kv.parentElement.classList.add(tv>lastVal?'f-pos':'f-neg');}
     setText('kVal','$'+f2(tv));
@@ -448,7 +457,7 @@ async function fetchData(){
     const kn=$('kNet');if(kn){kn.textContent=(nr>=0?'+':'')+f2(nr);kn.className='kpi-val '+(nr>=0?'pos':'neg');}
     const ku=$('kUnr');const uv=acc.unrealized_pnl||0;if(ku){ku.textContent=(sign(uv))+'$'+f2(Math.abs(uv));ku.className='kpi-val '+(uv>=0?'pos':'neg');}
     const kr=$('kRet');if(kr){kr.textContent=(ret>=0?'+':'')+f2(ret)+'%';kr.className='kpi-val '+(ret>=0?'pos':'neg');}
-    setText('kRetSub','base $'+f2(initialEst));
+    setText('kRetSub','base $'+f2(CAPITAL));
     setText('kWr',f2(pm.win_rate||0)+'%');setText('kWrSub',(pm.total_trades||0)+' trades');
     setText('mLong',pm.long_trades||0);setText('mShort',pm.short_trades||0);setText('mHold',f2(pm.avg_holding_hours||0)+'h');setText('mPU',f2(pm.portfolio_utilization||0)+'%');setText('mConf',f2(pm.avg_confidence||0)+'%');setText('mLev',(cfg.leverage||10)+'×');setText('mRisk',(cfg.risk_per_trade_pct||1.5)+'%');setText('mFees','$'+f2(pm.total_fees||0));
     renderPositions(d.active_positions||[]);renderTrades(d.recent_trades||[]);
