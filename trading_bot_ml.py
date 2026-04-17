@@ -1,15 +1,3 @@
-"""
-trading_bot_ml.py
-=================
-Multi-Indicator Swing Trading Strategy
-- Timeframe    : 1h klines (swing trading)
-- Indicators   : EMA 20/50 crossover, RSI 14, MACD, Bollinger Bands, Volume MA
-- Risk mgmt    : Fixed % risk per trade (1.5 % of equity by default)
-- Data source  : Binance REST API (public, no key needed)
-- Execution    : Bybit Unified Trading (pybit)
-- Stop / TP    : ATR-derived levels (dynamic, not fixed pips)
-"""
-
 import os
 import time
 import json
@@ -33,7 +21,6 @@ try:
 except ImportError:
     PYBIT_AVAILABLE = False
 
-# ─────────────────────────── Logging ────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -43,10 +30,6 @@ logging.basicConfig(
     ],
 )
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  INDICATOR LIBRARY  (pure NumPy / pandas, no TA-Lib dependency)
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def ema(series: pd.Series, period: int) -> pd.Series:
     return series.ewm(span=period, adjust=False).mean()
@@ -98,38 +81,39 @@ def volume_ma(volume: pd.Series, period: int = 20) -> pd.Series:
     return volume.rolling(period).mean()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  SIGNAL SCORING ENGINE
-# ═══════════════════════════════════════════════════════════════════════════════
+def adx(high: pd.Series, low: pd.Series, close: pd.Series,
+        period: int = 14) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    """Returns (ADX, +DI, -DI)."""
+    prev_high  = high.shift(1)
+    prev_low   = low.shift(1)
+    plus_dm    = (high - prev_high).clip(lower=0)
+    minus_dm   = (prev_low - low).clip(lower=0)
+    plus_dm    = plus_dm.where(plus_dm > minus_dm, 0.0)
+    minus_dm   = minus_dm.where(minus_dm > plus_dm, 0.0)
+    atr_series = atr(high, low, close, period)
+    plus_di    = 100 * ema(plus_dm, period) / atr_series.replace(0, np.nan)
+    minus_di   = 100 * ema(minus_dm, period) / atr_series.replace(0, np.nan)
+    dx         = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    adx_line   = ema(dx, period)
+    return adx_line, plus_di, minus_di
+
 
 class SignalEngine:
-    """
-    Returns a composite score in [-1, +1].
-      > +LONG_THRESHOLD  → LONG
-      < -SHORT_THRESHOLD → SHORT
-      else               → HOLD
-    Each sub-indicator votes: +1 (bullish), -1 (bearish), 0 (neutral).
-    Votes are weighted and averaged.
-    """
-
-    LONG_THRESHOLD  = 0.40   # need 40% net bullish agreement
-    SHORT_THRESHOLD = 0.40
+    LONG_THRESHOLD  = 0.45
+    SHORT_THRESHOLD = 0.45
 
     WEIGHTS = {
-        "ema_cross":   0.30,   # trend direction (highest weight)
-        "macd":        0.25,   # momentum confirmation
-        "rsi":         0.20,   # overbought / oversold
-        "bb":          0.15,   # volatility / price extremes
-        "volume":      0.10,   # volume confirmation
+        "ema_cross":   0.28,
+        "macd":        0.22,
+        "rsi":         0.20,
+        "bb":          0.15,
+        "volume":      0.10,
+        "trend":       0.05,
     }
 
     @staticmethod
     def score(df: pd.DataFrame) -> Tuple[str, float, Dict]:
-        """
-        df must have columns: open, high, low, close, volume
-        Returns (signal, confidence, details_dict)
-        """
-        if len(df) < 60:
+        if len(df) < 80:
             return "HOLD", 0.0, {}
 
         close   = df["close"]
@@ -137,7 +121,6 @@ class SignalEngine:
         low     = df["low"]
         volume  = df["volume"]
 
-        # ── Compute indicators ─────────────────────────────────────────────
         ema20 = ema(close, 20)
         ema50 = ema(close, 50)
 
@@ -151,7 +134,8 @@ class SignalEngine:
 
         atr14 = atr(high, low, close, 14)
 
-        # ── Latest values ──────────────────────────────────────────────────
+        adx14, plus_di14, minus_di14 = adx(high, low, close, 14)
+
         c0  = close.iloc[-1]
         c1  = close.iloc[-2]
         e20 = ema20.iloc[-1]
@@ -159,13 +143,21 @@ class SignalEngine:
         e20_prev = ema20.iloc[-2]
         e50_prev = ema50.iloc[-2]
 
+        # EMA200 trend filter (only when enough data available)
+        has_ema200 = len(df) >= 200
+        if has_ema200:
+            ema200_val = float(ema(close, 200).iloc[-1])
+            trend_long  = c0 > ema200_val
+            trend_short = c0 < ema200_val
+        else:
+            ema200_val  = None
+            trend_long  = True
+            trend_short = True
+
         r0  = rsi14.iloc[-1]
         r1  = rsi14.iloc[-2]
+        r2  = rsi14.iloc[-3] if len(rsi14) > 2 else r1
 
-        m0  = macd_line.iloc[-1]
-        s0  = signal_line.iloc[-1]
-        m1  = macd_line.iloc[-2]
-        s1  = signal_line.iloc[-2]
         h0  = histogram.iloc[-1]
         h1  = histogram.iloc[-2]
 
@@ -176,78 +168,84 @@ class SignalEngine:
         vol0    = volume.iloc[-1]
         vol_avg = vol_ma20.iloc[-1]
 
-        atr_val = atr14.iloc[-1]
+        atr_val  = atr14.iloc[-1]
+        adx_val  = float(adx14.iloc[-1])  if not pd.isna(adx14.iloc[-1])  else 0.0
+        pdi_val  = float(plus_di14.iloc[-1])  if not pd.isna(plus_di14.iloc[-1])  else 0.0
+        mdi_val  = float(minus_di14.iloc[-1]) if not pd.isna(minus_di14.iloc[-1]) else 0.0
 
-        # ── Individual votes ───────────────────────────────────────────────
-
-        # 1. EMA Cross
-        #    +1 : 20 crosses above 50 (or 20 > 50 and price above both)
-        #    -1 : 20 crosses below 50 (or 20 < 50 and price below both)
-        if e20 > e50 and e20_prev <= e50_prev:          # fresh bullish cross
+        # ── EMA cross vote ──────────────────────────────────────────────────
+        if e20 > e50 and e20_prev <= e50_prev:
             ema_vote = 1.0
-        elif e20 < e50 and e20_prev >= e50_prev:        # fresh bearish cross
+        elif e20 < e50 and e20_prev >= e50_prev:
             ema_vote = -1.0
-        elif e20 > e50 and c0 > e20:                    # uptrend, price extended above
+        elif e20 > e50 and c0 > e20:
             ema_vote = 0.7
-        elif e20 < e50 and c0 < e20:                    # downtrend, price extended below
+        elif e20 < e50 and c0 < e20:
             ema_vote = -0.7
         else:
             ema_vote = 0.0
 
-        # 2. MACD
-        #    +1 : histogram turns positive (bullish cross)
-        #    -1 : histogram turns negative (bearish cross)
+        # Boost/dampen EMA vote by EMA200 trend alignment
+        if has_ema200:
+            if ema_vote > 0 and not trend_long:
+                ema_vote *= 0.3
+            elif ema_vote < 0 and not trend_short:
+                ema_vote *= 0.3
+
+        # ── MACD vote ───────────────────────────────────────────────────────
         if h0 > 0 and h1 <= 0:
             macd_vote = 1.0
         elif h0 < 0 and h1 >= 0:
             macd_vote = -1.0
-        elif h0 > 0 and h0 > h1:          # histogram growing → stronger bull
+        elif h0 > 0 and h0 > h1:
             macd_vote = 0.5
-        elif h0 < 0 and h0 < h1:          # histogram shrinking more negative
+        elif h0 < 0 and h0 < h1:
             macd_vote = -0.5
         else:
             macd_vote = 0.0
 
-        # 3. RSI
-        #    +1 : oversold (<35) turning up
-        #    -1 : overbought (>65) turning down
-        #    Avoid 30/70 extremes if already in strong trend (don't fight trend)
-        if r0 < 35 and r0 > r1:
+        # ── RSI vote (tighter 30/70 levels, considers momentum) ─────────────
+        if r0 < 30 and r0 > r1:
             rsi_vote = 1.0
-        elif r0 > 65 and r0 < r1:
+        elif r0 < 35 and r0 > r1 and r1 < r2:
+            rsi_vote = 0.8          # oversold + momentum turning
+        elif r0 > 70 and r0 < r1:
             rsi_vote = -1.0
-        elif 40 <= r0 <= 60:               # neutral zone
-            rsi_vote = 0.0
-        elif r0 > 60:
-            rsi_vote = -0.3               # mild caution at high RSI
+        elif r0 > 65 and r0 < r1 and r1 > r2:
+            rsi_vote = -0.8         # overbought + momentum turning
+        elif 45 <= r0 <= 55:
+            rsi_vote = 0.0          # neutral zone
+        elif r0 > 55 and trend_short:
+            rsi_vote = -0.2
+        elif r0 < 45 and trend_long:
+            rsi_vote = 0.2
         else:
-            rsi_vote = 0.3                # mild support at low RSI
+            rsi_vote = 0.0
 
-        # 4. Bollinger Bands
-        #    +1 : price touches / breaks lower band (potential reversal up)
-        #    -1 : price touches / breaks upper band (potential reversal down)
-        bb_width = (bb_u - bb_l) / bb_m  # relative width
-        if c0 <= bb_l and c1 > bb_l:     # just touched lower band
+        # ── Bollinger Band vote ─────────────────────────────────────────────
+        bb_width = (bb_u - bb_l) / bb_m if bb_m else 0
+        if c0 <= bb_l and c1 > bb_l:
             bb_vote = 1.0
-        elif c0 >= bb_u and c1 < bb_u:   # just touched upper band
+        elif c0 >= bb_u and c1 < bb_u:
             bb_vote = -1.0
-        elif c0 < bb_m and c0 > bb_l:    # below midline but not extreme
-            bb_vote = 0.3
-        elif c0 > bb_m and c0 < bb_u:    # above midline but not extreme
-            bb_vote = -0.3
+        elif c0 < bb_m and c0 > bb_l:
+            bb_vote = 0.3 if trend_long else 0.1
+        elif c0 > bb_m and c0 < bb_u:
+            bb_vote = -0.3 if trend_short else -0.1
         else:
             bb_vote = 0.0
 
-        # 5. Volume confirmation
-        #    +0.5 / -0.5 when volume > average (confirms direction)
-        #    0 when low volume (non-confirmed move)
+        # Ignore BB signals during very low volatility (squeeze)
+        if bb_width < 0.01:
+            bb_vote *= 0.3
+
+        # ── Volume vote ─────────────────────────────────────────────────────
         if vol_avg and vol_avg > 0:
             vol_ratio = vol0 / vol_avg
         else:
             vol_ratio = 1.0
 
-        if vol_ratio > 1.5:
-            # High volume: confirms whichever direction price moved
+        if vol_ratio > 2.0:
             price_move = c0 - c1
             if price_move > 0:
                 vol_vote = 1.0
@@ -255,12 +253,29 @@ class SignalEngine:
                 vol_vote = -1.0
             else:
                 vol_vote = 0.0
+        elif vol_ratio > 1.5:
+            price_move = c0 - c1
+            vol_vote = 0.7 if price_move > 0 else (-0.7 if price_move < 0 else 0.0)
         elif vol_ratio > 1.0:
             vol_vote = 0.3 if (c0 > c1) else -0.3
         else:
-            vol_vote = 0.0  # low volume → no confirmation
+            vol_vote = 0.0
 
-        # ── Weighted composite score ───────────────────────────────────────
+        # ── Trend (EMA200 + ADX) vote ────────────────────────────────────────
+        trend_vote = 0.0
+        if has_ema200:
+            if trend_long and adx_val > 20:
+                trend_vote = min(1.0, adx_val / 40)
+            elif trend_short and adx_val > 20:
+                trend_vote = -min(1.0, adx_val / 40)
+
+        # ── ADX filter: suppress signals in ranging markets ──────────────────
+        adx_mult = 1.0
+        if adx_val < 15:
+            adx_mult = 0.4    # very weak trend — heavily dampen signal
+        elif adx_val < 20:
+            adx_mult = 0.7    # weak trend — moderate dampen
+
         w = SignalEngine.WEIGHTS
         composite = (
             w["ema_cross"] * ema_vote
@@ -268,12 +283,11 @@ class SignalEngine:
             + w["rsi"]     * rsi_vote
             + w["bb"]      * bb_vote
             + w["volume"]  * vol_vote
-        )
-        # Normalize to [-1, 1]
+            + w["trend"]   * trend_vote
+        ) * adx_mult
         total_weight = sum(w.values())
         score = composite / total_weight
 
-        # ── Signal decision ────────────────────────────────────────────────
         if score >= SignalEngine.LONG_THRESHOLD:
             signal = "LONG"
         elif score <= -SignalEngine.SHORT_THRESHOLD:
@@ -281,7 +295,12 @@ class SignalEngine:
         else:
             signal = "HOLD"
 
-        # Confidence = how far score is from threshold (capped at 0.95)
+        # Hard block: don't go long in confirmed downtrend or short in uptrend
+        if has_ema200 and signal == "LONG" and not trend_long:
+            signal = "HOLD"
+        elif has_ema200 and signal == "SHORT" and not trend_short:
+            signal = "HOLD"
+
         if signal == "LONG":
             confidence = min(0.95, 0.5 + (score - SignalEngine.LONG_THRESHOLD))
         elif signal == "SHORT":
@@ -296,11 +315,14 @@ class SignalEngine:
             "rsi_vote":    round(rsi_vote, 2),
             "bb_vote":     round(bb_vote, 2),
             "vol_vote":    round(vol_vote, 2),
+            "trend_vote":  round(trend_vote, 2),
             "rsi_value":   round(r0, 1),
             "atr":         round(atr_val, 6),
             "vol_ratio":   round(vol_ratio, 2),
+            "adx":         round(adx_val, 1),
             "ema20":       round(e20, 4),
             "ema50":       round(e50, 4),
+            "ema200":      round(ema200_val, 4) if ema200_val else None,
             "bb_upper":    round(bb_u, 4),
             "bb_lower":    round(bb_l, 4),
         }
@@ -308,41 +330,23 @@ class SignalEngine:
         return signal, round(confidence, 4), details
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  MAIN BOT CLASS
-# ═══════════════════════════════════════════════════════════════════════════════
-
 class LLMTradingBot:
-    """
-    Swing-trading bot:
-    - Fetches 1h OHLCV from Binance (100 candles per asset)
-    - Scores each asset with SignalEngine
-    - Sizes position using fixed-% risk on ATR stop
-    - Executes via Bybit Unified (pybit)
-    - Monitors TP / SL / max-hold time
-    """
-
-    # ── Configuration ─────────────────────────────────────────────────────
     ASSETS           = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT"]
-    KLINE_INTERVAL   = "60"          # 1 hour in Binance notation ('60')
-    KLINE_LIMIT      = 100           # how many candles to fetch
-    LOOP_INTERVAL    = 300           # seconds between strategy iterations (5 min)
+    KLINE_INTERVAL   = "60"
+    KLINE_LIMIT      = 220      # 220 candles — wystarczy na EMA200 + bufor
+    LOOP_INTERVAL    = 300
 
-    # Risk
-    RISK_PER_TRADE   = 0.015         # 1.5 % of equity per trade
+    RISK_PER_TRADE   = 0.015
     MAX_POSITIONS    = 4
-    LEVERAGE         = 10            # reasonable for swing trading
-    MIN_CONFIDENCE   = 0.45          # minimum score confidence to enter
+    LEVERAGE         = 10
+    MIN_CONFIDENCE   = 0.55     # wyższy próg — bardziej selektywne wejścia
 
-    # Exit plan (multiples of ATR)
-    TP_ATR_MULT      = 3.0           # take profit = entry ± 3×ATR
-    SL_ATR_MULT      = 1.5           # stop loss   = entry ∓ 1.5×ATR
-    MAX_HOLD_HOURS   = 48            # force-close after 48 h
+    TP_ATR_MULT      = 3.0
+    SL_ATR_MULT      = 1.5
+    MAX_HOLD_HOURS   = 48
 
-    # Fees (Bybit maker/taker)
     FEE_RATE         = 0.00055
 
-    # ── Binance REST base ─────────────────────────────────────────────────
     BINANCE_BASE     = "https://api.binance.com/api/v3"
 
     def __init__(self,
@@ -353,18 +357,15 @@ class LLMTradingBot:
 
         self.logger = logging.getLogger(__name__)
 
-        # API keys
         self.api_key    = api_key    or os.getenv("BYBIT_API_KEY",    "")
         self.api_secret = api_secret or os.getenv("BYBIT_API_SECRET", "")
 
         if leverage is not None:
             self.LEVERAGE = leverage
 
-        # Mode
         self.real_trading = bool(self.api_key and self.api_secret)
         self.testnet      = False
 
-        # Pybit session
         self.session: Optional[HTTP] = None
         if self.real_trading and PYBIT_AVAILABLE:
             try:
@@ -377,23 +378,32 @@ class LLMTradingBot:
             except Exception as exc:
                 self.logger.error(f"❌ Bybit session error: {exc}")
 
-        # Capital
         self.initial_capital  = initial_capital
         self.virtual_capital  = initial_capital
         self.virtual_balance  = initial_capital
 
-        # State
+        # Jeśli real trading — pobierz saldo z Bybit i użyj jako initial_capital
+        if self.real_trading and self.session:
+            try:
+                resp = self.session.get_wallet_balance(accountType="UNIFIED")
+                if resp["retCode"] == 0:
+                    real_bal = float(resp["result"]["list"][0]["totalEquity"])
+                    self.initial_capital = real_bal
+                    self.virtual_capital = real_bal
+                    self.virtual_balance = real_bal
+                    self.logger.info(f"💰 Saldo startowe z Bybit: ${real_bal:.2f}")
+            except Exception as exc:
+                self.logger.warning(f"⚠️ Nie udało się pobrać salda startowego: {exc}")
+
         self.positions:     Dict[str, dict] = {}
         self.trade_history: List[dict]      = []
         self.position_id    = 0
         self.is_running     = False
 
-        # Caches
         self.price_cache:   Dict[str, dict] = {}
-        self.kline_cache:   Dict[str, dict] = {}   # {symbol: {df, timestamp}}
-        self.signal_cache:  Dict[str, dict] = {}   # {symbol: {signal, confidence, details, timestamp}}
+        self.kline_cache:   Dict[str, dict] = {}
+        self.signal_cache:  Dict[str, dict] = {}
 
-        # Stats
         self.stats = {
             "total_trades":   0,
             "winning_trades": 0,
@@ -405,10 +415,9 @@ class LLMTradingBot:
             "avg_hold_hours": 0.0,
         }
 
-        # Dashboard
         self.dashboard_data = {
-            "account_value":      initial_capital,
-            "available_cash":     initial_capital,
+            "account_value":      self.initial_capital,
+            "available_cash":     self.initial_capital,
             "total_fees":         0.0,
             "net_realized":       0.0,
             "unrealized_pnl":     0.0,
@@ -417,7 +426,6 @@ class LLMTradingBot:
         }
         self.chart_data = {"labels": [], "values": []}
 
-        # Legacy compatibility (profile system kept for UI)
         self.active_profile = "SwingStrategy"
         self.llm_profiles   = {
             "SwingStrategy": {
@@ -437,20 +445,12 @@ class LLMTradingBot:
         self.logger.info(f"   Leverage  : {self.LEVERAGE}x")
         self.logger.info(f"   Real mode : {self.real_trading}")
 
-    # ══════════════════════════════════════════════════════════════════════
-    #  DATA FETCHING
-    # ══════════════════════════════════════════════════════════════════════
-
     def get_klines(self, symbol: str, force: bool = False) -> Optional[pd.DataFrame]:
-        """
-        Fetch 1h OHLCV from Binance.
-        Cached for 4 minutes to avoid hammering the API.
-        """
         now = datetime.now()
         cached = self.kline_cache.get(symbol)
         if not force and cached:
             age = (now - cached["timestamp"]).total_seconds()
-            if age < 240:  # 4-minute cache
+            if age < 240:
                 return cached["df"]
 
         try:
@@ -484,7 +484,6 @@ class LLMTradingBot:
             return None
 
     def get_current_price(self, symbol: str) -> Optional[float]:
-        """Latest price from Binance ticker."""
         try:
             resp = requests.get(
                 f"{self.BINANCE_BASE}/ticker/price",
@@ -504,24 +503,14 @@ class LLMTradingBot:
             return None
 
     def get_binance_price(self, symbol: str) -> Optional[float]:
-        """Alias kept for backwards compatibility with app.py."""
         return self.get_current_price(symbol)
 
-    # ══════════════════════════════════════════════════════════════════════
-    #  SIGNAL GENERATION
-    # ══════════════════════════════════════════════════════════════════════
-
     def generate_llm_signal(self, symbol: str) -> Tuple[str, float]:
-        """
-        Generates signal using the multi-indicator SignalEngine.
-        Results cached for 10 minutes (signals don't change within a candle).
-        Returns (signal, confidence).
-        """
         now = datetime.now()
         cached = self.signal_cache.get(symbol)
         if cached:
             age = (now - cached["timestamp"]).total_seconds()
-            if age < 600:  # 10-minute cache
+            if age < 600:
                 return cached["signal"], cached["confidence"]
 
         df = self.get_klines(symbol)
@@ -547,12 +536,7 @@ class LLMTradingBot:
         return signal, confidence
 
     def get_signal_details(self, symbol: str) -> dict:
-        """Return full detail dict for a symbol (for dashboard)."""
         return self.signal_cache.get(symbol, {}).get("details", {})
-
-    # ══════════════════════════════════════════════════════════════════════
-    #  POSITION SIZING  (fixed-% risk)
-    # ══════════════════════════════════════════════════════════════════════
 
     def calculate_position_size(
         self,
@@ -560,32 +544,22 @@ class LLMTradingBot:
         price:      float,
         confidence: float,
     ) -> Tuple[float, float, float]:
-        """
-        Risk-based position sizing.
-        Stop distance = SL_ATR_MULT × ATR (per unit).
-        Risk budget   = equity × RISK_PER_TRADE × confidence_scalar.
-        Quantity      = risk_budget / stop_distance.
-        Returns (quantity, position_value, margin_required).
-        """
         df = self.get_klines(symbol)
 
-        # ATR for stop distance
         if df is not None and len(df) >= 20:
             atr_series = atr(df["high"], df["low"], df["close"], 14)
             atr_val    = float(atr_series.iloc[-1])
         else:
-            atr_val = price * 0.01  # fallback: 1% of price
+            atr_val = price * 0.01
 
-        stop_distance = self.SL_ATR_MULT * atr_val  # in price units
+        stop_distance = self.SL_ATR_MULT * atr_val
 
-        # Equity
         equity = self.get_account_balance() or self.virtual_balance
 
-        # Scale risk by confidence (0.45 → 80% of risk, 0.95 → 120%)
         confidence_scalar = 0.7 + (confidence - self.MIN_CONFIDENCE) * 1.0
         confidence_scalar = max(0.5, min(1.5, confidence_scalar))
 
-        risk_budget = equity * self.RISK_PER_TRADE * confidence_scalar  # USD at risk
+        risk_budget = equity * self.RISK_PER_TRADE * confidence_scalar
 
         if stop_distance <= 0 or price <= 0:
             return 0.0, 0.0, 0.0
@@ -603,17 +577,13 @@ class LLMTradingBot:
         side:        str,
         symbol:      str = "",
     ) -> dict:
-        """
-        ATR-based TP and SL.
-        Falls back to percentage-based if ATR unavailable.
-        """
         df = self.get_klines(symbol) if symbol else None
 
         if df is not None and len(df) >= 20:
             atr_series = atr(df["high"], df["low"], df["close"], 14)
             atr_val    = float(atr_series.iloc[-1])
         else:
-            atr_val = entry_price * 0.012   # 1.2% fallback
+            atr_val = entry_price * 0.012
 
         sl_dist = self.SL_ATR_MULT * atr_val
         tp_dist = self.TP_ATR_MULT * atr_val
@@ -635,10 +605,6 @@ class LLMTradingBot:
             "atr_val":        round(atr_val, 6),
             "rr_ratio":       round(tp_dist / sl_dist, 2),
         }
-
-    # ══════════════════════════════════════════════════════════════════════
-    #  ACCOUNT  (Bybit)
-    # ══════════════════════════════════════════════════════════════════════
 
     def get_account_balance(self) -> Optional[float]:
         if not self.real_trading or not self.session:
@@ -671,8 +637,6 @@ class LLMTradingBot:
             self.logger.error(f"❌ set_leverage exception: {exc}")
             return False
 
-    # ── Lot size formatting ────────────────────────────────────────────────
-
     LOT_RULES: Dict[str, float] = {
         "BTCUSDT":  0.001,
         "ETHUSDT":  0.01,
@@ -699,10 +663,6 @@ class LLMTradingBot:
             return str(int(qty))
         decimals = len(str(lot).rstrip("0").split(".")[-1])
         return f"{qty:.{decimals}f}"
-
-    # ══════════════════════════════════════════════════════════════════════
-    #  ORDER EXECUTION  (Bybit)
-    # ══════════════════════════════════════════════════════════════════════
 
     def place_bybit_order(
         self,
@@ -764,23 +724,16 @@ class LLMTradingBot:
             self.logger.error(f"❌ close_bybit_position exception: {exc}")
         return False
 
-    # ══════════════════════════════════════════════════════════════════════
-    #  POSITION MANAGEMENT
-    # ══════════════════════════════════════════════════════════════════════
-
     def open_llm_position(self, symbol: str) -> Optional[str]:
-        """Try to open a position for symbol based on current signal."""
         signal, confidence = self.generate_llm_signal(symbol)
 
         if signal == "HOLD" or confidence < self.MIN_CONFIDENCE:
             return None
 
-        # Cap simultaneous positions
         active_count = sum(1 for p in self.positions.values() if p["status"] == "ACTIVE")
         if active_count >= self.MAX_POSITIONS:
             return None
 
-        # Avoid doubling up on same symbol
         if any(
             p["symbol"] == symbol and p["status"] == "ACTIVE"
             for p in self.positions.values()
@@ -798,7 +751,6 @@ class LLMTradingBot:
             self.logger.warning(f"⚠️ Invalid position size for {symbol}")
             return None
 
-        # Balance check
         equity = self.get_account_balance() or self.virtual_balance
         if margin_required > equity * 0.9:
             self.logger.warning(
@@ -813,7 +765,6 @@ class LLMTradingBot:
         else:
             liq_price = price * (1 + 0.9 / self.LEVERAGE)
 
-        # Place order
         order_id = self.place_bybit_order(symbol, signal, quantity, price)
         if self.real_trading and not order_id:
             return None
@@ -868,7 +819,6 @@ class LLMTradingBot:
         side:     str,
         quantity: float,
     ) -> Optional[str]:
-        """Manual position open (from API endpoint)."""
         price = self.get_current_price(symbol)
         if not price:
             return None
@@ -987,6 +937,21 @@ class LLMTradingBot:
         position["status"] = "CLOSED"
         self.dashboard_data["net_realized"] = self.stats["total_pnl"]
 
+        # Natychmiastowa aktualizacja equity po zamknięciu pozycji
+        remaining_unrealized = sum(
+            p["unrealized_pnl"] for p in self.positions.values()
+            if p["status"] == "ACTIVE"
+        )
+        if self.real_trading:
+            equity = self.get_account_balance()
+            if equity is not None:
+                self.dashboard_data["account_value"]  = equity + remaining_unrealized
+                self.dashboard_data["available_cash"] = equity
+                self.virtual_balance = equity
+        else:
+            self.dashboard_data["account_value"]  = self.virtual_balance + remaining_unrealized
+            self.dashboard_data["available_cash"] = self.virtual_balance
+
         icon = "🟢" if net_pnl > 0 else "🔴"
         self.logger.info(
             f"{icon} CLOSE {position['side']}: {position['symbol']} "
@@ -995,7 +960,6 @@ class LLMTradingBot:
         )
 
     def update_positions_pnl(self):
-        """Refresh unrealized PnL for all active positions."""
         total_unrealized = 0.0
         total_margin     = 0.0
         confidence_sum   = 0.0
@@ -1042,7 +1006,6 @@ class LLMTradingBot:
         self.dashboard_data["last_update"] = datetime.now()
 
     def check_exit_conditions(self) -> List[Tuple[str, str, float]]:
-        """Return list of (position_id, reason, exit_price) for positions to close."""
         to_close = []
 
         for pid, position in self.positions.items():
@@ -1080,7 +1043,6 @@ class LLMTradingBot:
             if hold_h > ep.get("max_holding_hours", self.MAX_HOLD_HOURS):
                 reason = "TIME_EXPIRED"
 
-            # Signal reversal exit: if new signal opposes open position, exit early
             if not reason:
                 cached_sig = self.signal_cache.get(position["symbol"])
                 if cached_sig:
@@ -1093,10 +1055,6 @@ class LLMTradingBot:
 
         return to_close
 
-    # ══════════════════════════════════════════════════════════════════════
-    #  MAIN LOOP
-    # ══════════════════════════════════════════════════════════════════════
-
     def run_llm_trading_strategy(self):
         self.logger.info("🚀 Swing Trading loop started")
         iteration = 0
@@ -1106,14 +1064,11 @@ class LLMTradingBot:
             self.logger.info(f"\n── Iteration #{iteration} ─────────────────────────")
 
             try:
-                # 1. Update PnL
                 self.update_positions_pnl()
 
-                # 2. Exit conditions
                 for pid, reason, price in self.check_exit_conditions():
                     self.close_position(pid, reason, price)
 
-                # 3. Generate fresh signals for all assets
                 active_symbols = {
                     p["symbol"]
                     for p in self.positions.values()
@@ -1125,7 +1080,7 @@ class LLMTradingBot:
                     for symbol in self.assets:
                         if symbol not in active_symbols:
                             self.open_llm_position(symbol)
-                            time.sleep(0.5)   # gentle pacing
+                            time.sleep(0.5)
 
                 equity = self.dashboard_data["account_value"]
                 ret_pct = (equity - self.initial_capital) / self.initial_capital * 100
@@ -1138,7 +1093,6 @@ class LLMTradingBot:
             except Exception as exc:
                 self.logger.error(f"❌ Loop error: {exc}", exc_info=True)
 
-            # Wait for next iteration
             for _ in range(self.LOOP_INTERVAL):
                 if not self.is_running:
                     break
@@ -1154,10 +1108,6 @@ class LLMTradingBot:
     def stop_trading(self):
         self.is_running = False
         self.logger.info("⏹️  Trading bot stopping…")
-
-    # ══════════════════════════════════════════════════════════════════════
-    #  DASHBOARD DATA
-    # ══════════════════════════════════════════════════════════════════════
 
     def get_dashboard_data(self) -> dict:
         active_positions = []
@@ -1200,13 +1150,11 @@ class LLMTradingBot:
             })
             total_unrealized += pnl
 
-        # Confidence levels with indicator details
         confidence_levels = {}
         for symbol in self.assets:
             _, conf = self.generate_llm_signal(symbol)
             confidence_levels[symbol] = round(conf * 100, 1)
 
-        # Recent trades (newest first, all of them)
         recent_trades = []
         for trade in sorted(self.trade_history, key=lambda x: x["exit_time"], reverse=True):
             recent_trades.append({
@@ -1233,11 +1181,12 @@ class LLMTradingBot:
 
         return {
             "account_summary": {
-                "total_value":    round(self.dashboard_data["account_value"], 2),
-                "available_cash": round(self.dashboard_data["available_cash"], 2),
-                "net_realized":   round(self.dashboard_data["net_realized"], 2),
-                "unrealized_pnl": round(self.dashboard_data["unrealized_pnl"], 2),
-                "real_trading":   self.real_trading,
+                "total_value":      round(self.dashboard_data["account_value"], 2),
+                "available_cash":   round(self.dashboard_data["available_cash"], 2),
+                "net_realized":     round(self.dashboard_data["net_realized"], 2),
+                "unrealized_pnl":   round(self.dashboard_data["unrealized_pnl"], 2),
+                "real_trading":     self.real_trading,
+                "initial_capital":  round(self.initial_capital, 2),
             },
             "performance_metrics": {
                 "total_return_pct":     round(ret_pct, 2),
@@ -1280,10 +1229,7 @@ class LLMTradingBot:
         hhi = sum((p["margin"] / total) ** 2 for p in active)
         return 1 - hhi
 
-    # ── Legacy helpers used by app.py ──────────────────────────────────────
-
     def set_active_profile(self, profile_name: str) -> bool:
-        # Accept any name for UI compatibility; strategy doesn't change
         self.active_profile = profile_name
         self.dashboard_data["active_profile"] = profile_name
         return True
@@ -1308,10 +1254,6 @@ class LLMTradingBot:
             "message":           f"Balance: ${equity:.2f}" if equity else "Virtual mode",
         }
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  FLASK APPLICATION  (identical API surface as original)
-# ═══════════════════════════════════════════════════════════════════════════════
 
 app = Flask(__name__)
 CORS(app)
@@ -1416,7 +1358,6 @@ def api_status():
 
 @app.route("/api/signal-details/<symbol>")
 def signal_details(symbol):
-    """New endpoint: full indicator breakdown for a symbol."""
     try:
         sig, conf = trading_bot.generate_llm_signal(symbol)
         details   = trading_bot.get_signal_details(symbol)
