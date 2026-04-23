@@ -550,6 +550,22 @@ def run_bot():
         import traceback
         app.logger.error(traceback.format_exc())
 
+@app.route('/api/signal-details/<symbol>')
+def signal_details(symbol):
+    try:
+        if not llm_trading_bot:
+            return jsonify({'error': 'Bot not initialized'}), 500
+        sig, conf = llm_trading_bot.generate_llm_signal(symbol)
+        details = llm_trading_bot.get_signal_details(symbol)
+        return jsonify({
+            'symbol': symbol,
+            'signal': sig,
+            'confidence': conf,
+            'indicators': details
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     app.logger.info("🚀 Starting LLM Trading Bot Server...")
     app.logger.info("📍 Dashboard available at: http://localhost:5000")
