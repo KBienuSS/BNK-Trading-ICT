@@ -9,6 +9,7 @@ import requests
 import os
 from dotenv import load_dotenv
 
+# Załaduj zmienne środowiskowe z pliku .env
 load_dotenv()
 
 from trading_bot_ml import LLMTradingBot
@@ -16,9 +17,11 @@ from trading_bot_ml import LLMTradingBot
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
+# Global bot instance - używamy tylko LLMTradingBot
 llm_trading_bot = None
 bot_status = "stopped"
 
+# Inicjalizacja bota przy starcie
 try:
     llm_trading_bot = LLMTradingBot()
     print("✅ LLM Trading Bot initialized successfully on app startup")
@@ -59,6 +62,7 @@ def index():
 
 @app.route('/api/trading-data')
 def get_trading_data():
+    """Zwraca dane tradingowe dla dashboardu"""
     try:
         if llm_trading_bot:
             data = llm_trading_bot.get_dashboard_data()
@@ -73,6 +77,7 @@ def get_trading_data():
 
 @app.route('/api/bot-status')
 def get_bot_status():
+    """Zwraca status bota"""
     try:
         if llm_trading_bot:
             status = 'running' if llm_trading_bot.is_running else 'stopped'
@@ -82,26 +87,17 @@ def get_bot_status():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/signal-details/<symbol>')
-def signal_details(symbol):
-    try:
-        if not llm_trading_bot:
-            return jsonify({'error': 'Bot not initialized'}), 500
-        sig, conf = llm_trading_bot.generate_llm_signal(symbol)
-        details   = llm_trading_bot.get_signal_details(symbol)
-        return jsonify({"symbol": symbol, "signal": sig, "confidence": conf, "indicators": details})
-    except Exception as e:
-        app.logger.error(f"❌ Error getting signal details for {symbol}: {e}")
-        return jsonify({'error': str(e)}), 500
-
 @app.route('/api/debug-positions')
 def debug_positions():
+    """Endpoint do debugowania pozycji"""
     try:
         if not llm_trading_bot:
             return jsonify({'error': 'Trading bot not initialized'}), 500
         
+        # Pobierz pozycje z Bybit
         bybit_positions = llm_trading_bot.get_bybit_positions()
         
+        # Pobierz lokalne pozycje
         local_positions = []
         for pos_id, pos in llm_trading_bot.positions.items():
             if pos['status'] == 'ACTIVE':
@@ -126,6 +122,7 @@ def debug_positions():
 
 @app.route('/api/open-position', methods=['POST'])
 def open_position():
+    """Ręczne otwieranie pozycji"""
     try:
         data = request.get_json()
         symbol = data.get('symbol')
@@ -135,9 +132,12 @@ def open_position():
         if not symbol or not side or quantity <= 0:
             return jsonify({'error': 'Symbol, side and valid quantity are required'}), 400
         
+        # POPRAWIAMY: używamy llm_trading_bot zamiast trading_bot
         if not llm_trading_bot:
             return jsonify({'error': 'Bot not initialized'}), 500
         
+        # Potrzebujemy funkcji open_real_position w LLMTradingBot
+        # Jeśli jej nie ma, musimy dodać
         if not hasattr(llm_trading_bot, 'open_real_position'):
             return jsonify({'error': 'open_real_position function not available in bot'}), 500
             
@@ -153,12 +153,15 @@ def open_position():
         
 @app.route('/api/start-bot', methods=['POST'])
 def start_bot():
+    """Uruchamia bota"""
     global bot_status, llm_trading_bot
     try:
         if bot_status != "running":
+            # Upewnij się że bot jest zainicjalizowany
             if not llm_trading_bot:
                 llm_trading_bot = LLMTradingBot()
             
+            # Uruchom bot w osobnym wątku
             bot_thread = threading.Thread(target=run_bot)
             bot_thread.daemon = True
             bot_thread.start()
@@ -174,6 +177,7 @@ def start_bot():
 
 @app.route('/api/stop-bot', methods=['POST'])
 def stop_bot():
+    """Zatrzymuje bota"""
     global bot_status
     try:
         if bot_status == "running" and llm_trading_bot:
@@ -189,19 +193,24 @@ def stop_bot():
 
 @app.route('/api/test-order', methods=['POST'])
 def test_order():
+    """Endpoint do bezpośredniego testowania składania zleceń"""
     if not llm_trading_bot:
         return jsonify({'error': 'Bot not initialized'}), 500
     
     symbol = "BTCUSDT"
-    test_quantity = 0.001
+    
+    # Testowe parametry
+    test_quantity = 0.001  # Minimalna ilość BTC
     test_side = "LONG"
     
     app.logger.info("🧪 TEST ORDER - Starting direct API test")
     
+    # 1. Test pobierania ceny
     price = llm_trading_bot.get_current_price(symbol)
     if not price:
         return jsonify({"status": "failed", "message": "Could not get price"})
     
+    # 2. Test składania zlecenia
     order_id = llm_trading_bot.place_bybit_order(symbol, test_side, test_quantity, price)
     
     if order_id:
@@ -211,6 +220,7 @@ def test_order():
 
 @app.route('/api/change-profile', methods=['POST'])
 def change_profile():
+    """Zmienia profil LLM"""
     try:
         if not llm_trading_bot:
             return jsonify({'error': 'Bot not initialized'}), 500
@@ -229,17 +239,21 @@ def change_profile():
 
 @app.route('/api/debug-api')
 def debug_api():
+    """Debuguje połączenie API"""
     if not llm_trading_bot:
         return jsonify({'error': 'Bot not initialized'})
     
     try:
+        # Sprawdź dostępne kategorie
         categories = llm_trading_bot.check_available_categories()
         
+        # Sprawdź ceny dla wszystkich symboli
         price_check = {}
         for symbol in llm_trading_bot.assets:
             price = llm_trading_bot.get_current_price(symbol)
             price_check[symbol] = price if price else "NO PRICE"
         
+        # Sprawdź status API
         api_status = llm_trading_bot.check_api_status()
         
         return jsonify({
@@ -253,6 +267,7 @@ def debug_api():
 
 @app.route('/api/force-update', methods=['POST'])
 def force_update():
+    """Wymusza aktualizację danych"""
     try:
         if llm_trading_bot:
             llm_trading_bot.update_positions_pnl()
@@ -266,6 +281,7 @@ def force_update():
 
 @app.route('/api/api-status')
 def api_status():
+    """Check API connection status"""
     try:
         if llm_trading_bot:
             api_status = llm_trading_bot.check_api_status()
@@ -285,6 +301,7 @@ def api_status():
 
 @app.route('/api/save-chart-data', methods=['POST'])
 def save_chart_data():
+    """Zapisuje dane wykresu"""
     try:
         if not llm_trading_bot:
             return jsonify({'error': 'Bot not initialized'}), 500
@@ -299,6 +316,7 @@ def save_chart_data():
 
 @app.route('/api/load-chart-data')
 def load_chart_data():
+    """Ładuje dane wykresu"""
     try:
         if not llm_trading_bot:
             return jsonify({'error': 'Bot not initialized'}), 500
@@ -321,6 +339,7 @@ def force_sync():
 
 @app.route('/api/reinitialize-bot', methods=['POST'])
 def reinitialize_bot():
+    """Ponownie inicjalizuje bota"""
     global llm_trading_bot, bot_status
     try:
         if llm_trading_bot and llm_trading_bot.is_running:
@@ -337,6 +356,7 @@ def reinitialize_bot():
 
 @app.route('/api/check-permissions', methods=['GET'])
 def check_permissions():
+    """Sprawdza uprawnienia API"""
     try:
         if not llm_trading_bot:
             return jsonify({
@@ -346,10 +366,12 @@ def check_permissions():
             
         api_status = llm_trading_bot.check_api_status()
         
+        # Test zlecenia z minimalną kwotą
         test_symbol = "BTCUSDT"
         test_price = llm_trading_bot.get_current_price(test_symbol)
         
         if test_price:
+            # Sprawdź czy możemy ustawić dźwignię
             leverage_set = llm_trading_bot.set_leverage(test_symbol, llm_trading_bot.leverage)
             
             return jsonify({
@@ -374,6 +396,7 @@ def check_permissions():
 
 @app.route('/api/debug-conditions')
 def debug_conditions():
+    """Debuguje warunki wejścia"""
     if not llm_trading_bot:
         return jsonify({'error': 'Bot not initialized'})
     
@@ -403,6 +426,7 @@ def debug_conditions():
 
 @app.route('/api/debug-position-size/<symbol>')
 def debug_position_size(symbol):
+    """Debuguje kalkulację wielkości pozycji"""
     if not llm_trading_bot:
         return jsonify({'error': 'Bot not initialized'})
     
@@ -431,6 +455,7 @@ def debug_position_size(symbol):
 
 @app.route('/api/force-open-position/<symbol>', methods=['POST'])
 def force_open_position(symbol):
+    """Wymusza otwarcie pozycji dla testów"""
     if not llm_trading_bot:
         app.logger.error(f"❌ Bot not initialized for symbol {symbol}")
         return jsonify({'error': 'Bot not initialized'})
@@ -440,6 +465,7 @@ def force_open_position(symbol):
         app.logger.info(f"🔧 Real Trading: {llm_trading_bot.real_trading}")
         app.logger.info(f"🔧 Bot Running: {llm_trading_bot.is_running}")
         
+        # Pobierz aktualną cenę
         current_price = llm_trading_bot.get_current_price(symbol)
         app.logger.info(f"💰 Current price for {symbol}: ${current_price}")
         
@@ -449,6 +475,7 @@ def force_open_position(symbol):
                 'message': f'Could not get price for {symbol}'
             })
         
+        # Sprawdź aktywne pozycje
         active_positions = sum(1 for p in llm_trading_bot.positions.values() if p['status'] == 'ACTIVE')
         app.logger.info(f"📊 Active positions: {active_positions}/{llm_trading_bot.max_simultaneous_positions}")
         
@@ -458,6 +485,7 @@ def force_open_position(symbol):
                 'message': f'Max positions reached: {active_positions}/{llm_trading_bot.max_simultaneous_positions}'
             })
         
+        # Wywołaj funkcję bota
         app.logger.info(f"🚀 Calling llm_trading_bot.open_llm_position('{symbol}')")
         position_id = llm_trading_bot.open_llm_position(symbol)
         
@@ -483,6 +511,7 @@ def force_open_position(symbol):
 
 @app.route('/api/test-api-connection')
 def test_api_connection():
+    """Testuje połączenie z API Bybit"""
     try:
         if not llm_trading_bot:
             return jsonify({'error': 'Bot not initialized'}), 500
@@ -495,6 +524,7 @@ def test_api_connection():
         
 @app.route('/api/debug-all-positions')
 def debug_all_positions():
+    """Debuguje WSZYSTKIE pozycje na koncie Bybit"""
     try:
         if not llm_trading_bot:
             return jsonify({'error': 'Bot not initialized'}), 500
@@ -504,8 +534,10 @@ def debug_all_positions():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+        
 
 def run_bot():
+    """Run the trading bot in a separate thread"""
     global llm_trading_bot
     try:
         app.logger.info("🧠 Starting LLM Trading Bot thread...")
